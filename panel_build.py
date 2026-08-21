@@ -173,8 +173,9 @@ def composition(scope: dict[str, Any], by: str, limit: int, months: list[str], s
     return {"by": used, "label": by, "months": months, "series": series}
 
 
-def build(layout: str, breaks: list[str], limit: int) -> dict[str, Any]:
-    scope = lx.require_scope()
+def build(layout: str, breaks: list[str], limit: int, scope: dict | None = None) -> dict[str, Any]:
+    if scope is None:
+        scope = lx.require_scope()
     uni_scope = universe_scope(scope)
     uni_payload, _ = fetch_series(uni_scope)
     sel_payload, _ = fetch_series(scope)
