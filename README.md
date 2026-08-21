@@ -59,6 +59,13 @@ lx panel lines      # 5 séries no tempo (sem Outros)
 
 `--break importer,exporter` (padrão). `--out arquivo.png`.
 
+Exemplos (NCM 22042100 · cabernet franc · 12m):
+
+- `examples/breaks-cabernet-franc.png`
+- `examples/stacks-cabernet-franc.png`
+- `examples/lines-cabernet-franc.png`
+
+
 ## O que o backend ainda precisa (pra agente de verdade)
 
 1. `does-not-include` e regras no **universo**, não na página.
