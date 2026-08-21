@@ -65,6 +65,34 @@ Exemplos (NCM 22042100 · cabernet franc · 12m):
 - `examples/stacks-cabernet-franc.png`
 - `examples/lines-cabernet-franc.png`
 
+## Looks e dashboards (local)
+
+**Sala** (explore) = filtros do recorte que valem em todo tile: entity, ncm, period, região, regras que não são texto.
+
+**Quadro** (look) = zoom extra em alguns tiles: query/text/description/keywords/attribute, mais o jeito de olhar (`--layout` painel ou `--view`).
+
+Dashboard = vários looks + explore compartilhado.
+
+Isso é **só desta máquina**: `~/.config/lx/dashboards/` e `~/.config/lx/looks/` (0600 / dirs 0700). Não é workspace, não é tenant, não é o usuário Logcomex. Helmuth **não** vê. Não há sync.
+
+Looks built-in (sem arquivo): `breaks`, `stacks`, `lines`.
+
+```bash
+lx find product --ncm 85166000 --period 12m --text "air fryer"
+lx dashboard save airfryer --looks breaks,stacks,lines
+lx dashboard show airfryer
+lx dashboard show airfryer --period 3m
+lx dashboard ls
+lx dashboard rm NAME
+lx look save tops --view agg --by importer
+lx look ls
+lx look show tops
+lx look rm NAME
+```
+
+`dashboard show` reconstrói cada look. `--period` / `--ncm` mudam a sala (todos os tiles). `--text` muda a query do quadro. PNG em `--out` (padrão `/workspace`) como `{dashboard}-{look}.png`.
+
+Não use `explore`/`look` como sinônimo de `find`/`view`. Os verbos continuam find / view / panel.
 
 ## O que o backend ainda precisa (pra agente de verdade)
 
@@ -74,6 +102,7 @@ Exemplos (NCM 22042100 · cabernet franc · 12m):
 4. Envelope estável: `{contract, success, scope, coverage, totals, data, nextCursor, warnings}`. Coverage honesto no `/graph`.
 5. Auth de serviço (API key / service-session). Cookie + OTP não escala pra agente.
 6. Um nome só: hoje `/products/analyses` é agregado; `/company-analyses` é job de chat.
+7. Storage de looks/dashboards no tenant. Hoje o CLI grava só em `~/.config/lx/` nesta máquina.
 
 Série = `dimension=year_month`. Grafo de comércio = `/products/graph`. Não precisa de endpoint novo pra isso.
 
@@ -86,6 +115,7 @@ Série = `dimension=year_month`. Grafo de comércio = `/products/graph`. Não pr
 | | |
 |---|---|
 | `lx.py` | CLI |
+| `catalog.py` | looks e dashboards locais (`~/.config/lx/`) |
 | `panel.py` / `panel_build.py` | render dos painéis |
 | `panels/*.json` | layouts |
 | `openapi.json` | spec da platform (v1.1.0) |

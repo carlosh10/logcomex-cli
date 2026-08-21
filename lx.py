@@ -24,6 +24,8 @@ COOKIE_PATH = CFG / "cookies.txt"
 SESSION_PATH = CFG / "session.json"
 CURRENT_SCOPE_PATH = CFG / "current-scope.json"
 SCOPES_DIR = CFG / "scopes"
+LOOKS_DIR = CFG / "looks"
+DASH_DIR = CFG / "dashboards"
 UA = "lx-cli/0.2 (grok-bot)"
 
 INCLUDE_FIELD_MAP = {
@@ -465,6 +467,8 @@ def cmd_analyses(args: argparse.Namespace) -> None:
 def _ensure_cfg() -> None:
     CFG.mkdir(parents=True, mode=0o700, exist_ok=True)
     SCOPES_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+    LOOKS_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+    DASH_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
 
 
 def _safe_scope_name(name: str) -> str:
@@ -1334,10 +1338,95 @@ def cmd_panel(args: argparse.Namespace) -> None:
     print(json.dumps(out_json, ensure_ascii=False, indent=2))
 
 
+def cmd_look(args: argparse.Namespace) -> None:
+    import catalog
+    catalog.ensure_dirs()
+    cmd = args.look_cmd
+    if cmd == "ls":
+        out({
+            "ok": True,
+            "storage": "local",
+            "looks": catalog.list_looks(),
+            "builtin": list(catalog.BUILTIN_LOOKS),
+        })
+        return
+    if cmd == "show":
+        data = catalog.load_look(args.name)
+        out({"ok": True, "storage": data.get("storage") or "local", "look": data})
+        return
+    if cmd == "rm":
+        name = _safe_scope_name(args.name)
+        if name in catalog.BUILTIN_LOOKS and not catalog.look_path(name).exists():
+            fail({"error": "builtin_look", "name": name, "hint": "built-in looks cannot be removed"})
+        catalog.remove_look(name)
+        out({"ok": True, "removed": name, "storage": "local"})
+        return
+    if cmd != "save":
+        fail({"error": "unknown_look_cmd", "hint": "lx look save NAME --view|--layout | ls | show NAME | rm NAME"})
+    if bool(getattr(args, "view", None)) == bool(getattr(args, "layout", None)):
+        fail({
+            "error": "need_view_or_layout",
+            "hint": "lx look save NAME --view rows|agg|series|graph  OR  --layout breaks|stacks|lines",
+        })
+    scope = require_scope()
+    look = catalog.look_from_scope(
+        args.name,
+        scope,
+        view=args.view,
+        layout=args.layout,
+        by=getattr(args, "by", None),
+        metric=getattr(args, "metric", None) or "fob",
+        limit=getattr(args, "limit", None),
+        breaks=getattr(args, "breaks", None),
+    )
+    path = catalog.save_look(look)
+    out({"ok": True, "saved": look["name"], "path": str(path), "storage": "local", "look": look})
+
+
+def cmd_dashboard(args: argparse.Namespace) -> None:
+    import catalog
+    catalog.ensure_dirs()
+    cmd = args.dashboard_cmd
+    if cmd == "ls":
+        out({"ok": True, "storage": "local", "dashboards": catalog.list_dashboards()})
+        return
+    if cmd == "rm":
+        name = _safe_scope_name(args.name)
+        catalog.remove_dashboard(name)
+        out({"ok": True, "removed": name, "storage": "local"})
+        return
+    if cmd == "save":
+        scope = require_scope()
+        tokens = [x.strip() for x in (args.looks or "breaks,stacks,lines").split(",") if x.strip()]
+        if not tokens:
+            tokens = ["breaks", "stacks", "lines"]
+        dash = catalog.dashboard_from_scope(args.name, scope, tokens)
+        path = catalog.save_dashboard(dash)
+        out({"ok": True, "saved": dash["name"], "path": str(path), "storage": "local", "dashboard": dash})
+        return
+    if cmd == "show":
+        import panel_build
+        dash = catalog.load_dashboard(args.name)
+        overrides: dict[str, Any] = {}
+        if getattr(args, "period", None):
+            overrides["period"] = args.period
+        if getattr(args, "ncm", None):
+            overrides["ncm"] = args.ncm
+        if getattr(args, "text", None):
+            overrides["text"] = args.text
+        out_dir = Path(args.out) if args.out else Path("/workspace")
+        env = catalog.show_dashboard(dash, overrides=overrides, out_dir=out_dir, panel_build=panel_build)
+        if not env.get("ok"):
+            fail(env)
+        out(env)
+        return
+    fail({"error": "unknown_dashboard_cmd", "hint": "lx dashboard save NAME | ls | show NAME | rm NAME"})
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lx",
-        description="Logcomex platform CLI for agents. Prefer find/scope/rule/view/profile/watch/panel.",
+        description="Logcomex platform CLI for agents. Prefer find/scope/rule/view/profile/watch/panel/look/dashboard.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -1421,6 +1510,37 @@ def build_parser() -> argparse.ArgumentParser:
     pan.add_argument("--limit", type=int, default=5)
     pan.add_argument("--out", default="")
 
+    lk = sub.add_parser("look", help="local named looks in ~/.config/lx/looks/ (this machine only)")
+    lk_sub = lk.add_subparsers(dest="look_cmd", required=True)
+    lk_save = lk_sub.add_parser("save", help="save a look from current text selection")
+    lk_save.add_argument("name")
+    lk_save.add_argument("--view", choices=["rows", "agg", "series", "graph"])
+    lk_save.add_argument("--layout", choices=["breaks", "stacks", "lines"])
+    lk_save.add_argument("--by", help="month|year_month|importer|exporter|origin|ncm|country|consignee")
+    lk_save.add_argument("--metric", default="fob")
+    lk_save.add_argument("--limit", type=int)
+    lk_save.add_argument("--break", dest="breaks", default="importer,exporter")
+    lk_sub.add_parser("ls", help="list saved looks (plus built-in breaks|stacks|lines)")
+    lk_show = lk_sub.add_parser("show", help="print look JSON")
+    lk_show.add_argument("name")
+    lk_rm = lk_sub.add_parser("rm", help="delete a saved look file")
+    lk_rm.add_argument("name")
+
+    db = sub.add_parser("dashboard", help="local named dashboards in ~/.config/lx/dashboards/ (this machine only)")
+    db_sub = db.add_subparsers(dest="dashboard_cmd", required=True)
+    db_save = db_sub.add_parser("save", help="save current explore + looks")
+    db_save.add_argument("name")
+    db_save.add_argument("--looks", default="breaks,stacks,lines", help="comma names: built-in panels or saved looks")
+    db_sub.add_parser("ls", help="list local dashboards")
+    db_show = db_sub.add_parser("show", help="rebuild each look; --period/--ncm are room overrides")
+    db_show.add_argument("name")
+    db_show.add_argument("--period", choices=["latest", "3m", "6m", "12m", "all"])
+    db_show.add_argument("--ncm")
+    db_show.add_argument("--text", help="override look selection query (quadro)")
+    db_show.add_argument("--out", default="/workspace")
+    db_rm = db_sub.add_parser("rm", help="delete a local dashboard file")
+    db_rm.add_argument("name")
+
     ncm = sub.add_parser("ncm", help="alias: raw NCM Intel BR products")
     ncm.add_argument("--code", help="NCM code, e.g. 22042100")
     ncm.add_argument("--ncm")
@@ -1499,6 +1619,8 @@ def main() -> None:
         "profile": cmd_profile,
         "watch": cmd_watch,
         "panel": cmd_panel,
+        "look": cmd_look,
+        "dashboard": cmd_dashboard,
         "ncm": cmd_ncm,
         "company": cmd_company,
         "shipments": cmd_shipments,
