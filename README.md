@@ -21,12 +21,13 @@ ln -sf "$(pwd)/lx.py" ~/.local/bin/lx
 ## Login
 
 ```bash
-lx login --email voce@logcomex.com          # pede o código
-lx login --email voce@logcomex.com --code NNNNNN
+lx login --email voce@logcomex.com          # pede o código no prompt (não na argv)
+lx login --email voce@logcomex.com --code-file /path/para/otp
 lx whoami
 lx ws use demonstrativa                     # conta com dado; CSS Log é vazia
 ```
 
+OTP: prompt interativo ou `--code-file`, nunca na argv (não entra no history / `ps`).
 Senha: só via `--password-file`, nunca na argv.
 
 ## Uso (intel)
@@ -57,7 +58,7 @@ lx panel stacks     # composição mês a mês (empilhado, inclui Outros)
 lx panel lines      # 5 séries no tempo (sem Outros)
 ```
 
-`--break importer,exporter` (padrão). `--out arquivo.png`.
+`--break importer,exporter` (padrão). `--out arquivo.png` (padrão: diretório atual).
 
 Exemplos (NCM 22042100 · cabernet franc · 12m):
 
@@ -90,7 +91,7 @@ lx look show tops
 lx look rm NAME
 ```
 
-`dashboard show` reconstrói cada look. `--period` / `--ncm` mudam a sala (todos os tiles). `--text` muda a query do quadro. PNG em `--out` (padrão `/workspace`) como `{dashboard}-{look}.png`.
+`dashboard show` reconstrói cada look. `--period` / `--ncm` mudam a sala (todos os tiles). `--text` muda a query do quadro. PNG em `--out` (padrão: diretório atual) como `{dashboard}-{look}.png`.
 
 Não use `explore`/`look` como sinônimo de `find`/`view`. Os verbos continuam find / view / panel.
 
