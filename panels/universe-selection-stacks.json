@@ -1,0 +1,10 @@
+{
+  "id": "universe-selection-stacks",
+  "title": "Universo → seleção → composição no tempo",
+  "use": "Same drill, but the selection is shown as stacked bars over months for the top parties of two dimensions (importers, exporters).",
+  "steps": [
+    {"slot": "universe", "view": "series", "by": "year_month"},
+    {"slot": "stack_a", "view": "series_by", "by": "importer", "limit": 5},
+    {"slot": "stack_b", "view": "series_by", "by": "exporter", "limit": 5}
+  ]
+}

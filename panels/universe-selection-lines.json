@@ -1,0 +1,10 @@
+{
+  "id": "universe-selection-lines",
+  "title": "Universo → seleção → 5 séries no tempo",
+  "use": "Same drill. After the universe, show the top 5 parties of two dimensions as individual lines over months.",
+  "steps": [
+    {"slot": "universe", "view": "series", "by": "year_month"},
+    {"slot": "lines_a", "view": "series_by", "by": "importer", "limit": 5},
+    {"slot": "lines_b", "view": "series_by", "by": "exporter", "limit": 5}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "universe-selection-breaks",
+  "title": "Universo → seleção → quebras",
+  "use": "Macro to micro: time of the full find, time of the refined selection, then two category breaks of that selection.",
+  "steps": [
+    {"slot": "universe", "view": "series", "by": "year_month"},
+    {"slot": "selection", "view": "series", "by": "year_month"},
+    {"slot": "break_a", "view": "agg", "by": "importer", "limit": 5},
+    {"slot": "break_b", "view": "agg", "by": "exporter", "limit": 5}
+  ]
+}
