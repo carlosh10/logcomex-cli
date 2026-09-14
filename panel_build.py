@@ -273,7 +273,7 @@ def main() -> None:
     p.add_argument("--layout", default="universe-selection-breaks",
                    choices=["universe-selection-breaks", "universe-selection-stacks", "universe-selection-lines", "breaks", "stacks", "lines"])
     p.add_argument("--break", dest="breaks", default="importer,exporter",
-                   help="comma dims; breaks accepts 2–4 (default importer,exporter). Example: importer,exporter,origin,manufacturer")
+                   help="comma dims; breaks accepts 2–4 (default importer,exporter). Example: importer,exporter,market,state")
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--out", default="")
     args = p.parse_args()

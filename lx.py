@@ -34,6 +34,7 @@ INCLUDE_FIELD_MAP = {
         "ncm": "ncm", "country": "origin_country", "origin": "origin_country",
         "origin_country": "origin_country", "importer": "importer", "party": "importer",
         "exporter": "exporter", "attr": "attribute", "attribute": "attribute",
+        "keywords": "keywords", "keyword": "keywords", "brand": "brand", "model": "model",
         "place": "destination_port_name", "port": "destination_port_name", "period": "period",
     },
     "company": {"text": "query", "query": "query", "name": "query", "party": "query"},
@@ -53,14 +54,17 @@ PRODUCT_ANALYSES_DIMS = (
     "importer", "exporter", "manufacturer", "notify", "year_month",
 )
 
+# Product analyses: origin/country aliases resolve to market (origin_country is not in the enum).
+# Shipment analyses still use origin_country — see resolve_by.
 BY_ALIASES = {
     "month": "year_month",
     "year_month": "year_month",
     "importer": "importer",
     "exporter": "exporter",
-    "origin": "origin_country",
-    "origin_country": "origin_country",
-    "country": "origin_country",
+    "origin": "market",
+    "origem": "market",
+    "origin_country": "market",
+    "country": "market",
     "ncm": "ncm",
     "product": "product",
     "market": "market",
@@ -76,23 +80,29 @@ BY_ALIASES = {
     "shipper": "shipper",
 }
 
+SHIPMENT_BY_OVERRIDE = {
+    "origin": "origin_country",
+    "origem": "origin_country",
+    "origin_country": "origin_country",
+    "country": "country",
+}
+
 BY_HINT = (
     "product|ncm|market|company|state|commercial_unit|unit|importer|exporter|"
     "manufacturer|fabricante|notify|notify_party|year_month|month|"
-    "origin|origin_country|country|consignee|shipper"
+    "origin|origem|country|consignee|shipper"
 )
 
 DIM_LABELS_PT = {
     "importer": "importador",
     "exporter": "exportador",
-    "origin_country": "origem",
+    "market": "mercado / origem",
     "manufacturer": "fabricante",
     "ncm": "NCM",
     "commercial_unit": "unidade comercial",
     "product": "produto",
     "notify": "notify",
     "state": "estado",
-    "market": "mercado",
     "company": "empresa",
     "year_month": "mês",
     "consignee": "consignatário",
@@ -103,14 +113,58 @@ DIM_LABELS_PT = {
 PRODUCT_BREAK_DIMS = [
     {"rank": 1, "dimension": "importer", "aliases": ["importer"], "label": "importador"},
     {"rank": 2, "dimension": "exporter", "aliases": ["exporter"], "label": "exportador"},
-    {"rank": 3, "dimension": "origin_country", "aliases": ["origin", "origin_country", "country"], "label": "origem"},
+    {
+        "rank": 3, "dimension": "market",
+        "aliases": ["market", "origin", "origem", "origin_country", "country"],
+        "label": "mercado / origem",
+        "note": "practical origin break; dimension=origin_country returns 400",
+    },
     {"rank": 4, "dimension": "manufacturer", "aliases": ["manufacturer", "fabricante"], "label": "fabricante"},
     {"rank": 5, "dimension": "ncm", "aliases": ["ncm"], "label": "NCM"},
     {"rank": 6, "dimension": "commercial_unit", "aliases": ["commercial_unit", "unit"], "label": "unidade comercial"},
     {"rank": 7, "dimension": "product", "aliases": ["product"], "label": "produto"},
     {"rank": 8, "dimension": "notify", "aliases": ["notify", "notify_party"], "label": "notify"},
-    {"rank": 9, "dimension": "state", "aliases": ["state", "market"], "label": "estado / mercado", "note": "legado"},
+    {"rank": 9, "dimension": "state", "aliases": ["state"], "label": "estado"},
 ]
+
+# Card / filter refine — NOT analyses dimensions (brand|model → 400).
+PRODUCT_REFINE = {
+    "note": (
+        "Refine the selection (query / keywords / attribute). Not panel bars. "
+        "brand and model are card fields and attribute filters; dimension=brand|model returns 400. "
+        "Optional future Helmuth ask: dimension=brand|model."
+    ),
+    "card_fields": ["brand", "model", "keywords", "description", "attributesMain"],
+    "filters": [
+        {
+            "via": "--text",
+            "maps_to": "query",
+            "example": "lx find product --ncm 94013900 --period 12m --text gamer",
+        },
+        {
+            "via": "lx rule add NAME --include 'keywords: …'",
+            "maps_to": "keywords",
+            "example": "lx rule add kw --include 'keywords: gamer chair'",
+        },
+        {
+            "via": "lx rule add NAME --include 'attr: {\"name\",\"value\"}'",
+            "maps_to": "attribute",
+            "shape": {"name": "brand", "value": "THUNDERX3"},
+            "example": "lx rule add brand --include 'attr: {\"name\":\"brand\",\"value\":\"THUNDERX3\"}'",
+            "also": "attr: brand=THUNDERX3   or   brand: THUNDERX3",
+        },
+        {
+            "via": "description",
+            "maps_to": "description",
+            "example": "lx rule add desc --include 'description: cadeira gamer'",
+        },
+    ],
+    "attributes_main": [
+        "brand", "color", "year", "packed", "electric_current",
+        "composition", "destination", "dimensions",
+    ],
+    "not_dimensions": ["brand", "model"],
+}
 
 
 def dim_label(raw: str | None, used: str | None = None) -> str:
@@ -142,7 +196,8 @@ def product_break_dims() -> dict[str, Any]:
                 "note": "OpenAPI product analyses; unusual in a typical product brief",
             },
         ],
-        "hint": "lx panel breaks --break importer,exporter,origin,manufacturer",
+        "refine": dict(PRODUCT_REFINE),
+        "hint": "lx panel breaks --break importer,exporter,market,state",
     }
 
 
@@ -649,6 +704,35 @@ def expand_origin_country(value: str, entity: str, region: str | None) -> tuple[
     return raw, None
 
 
+def encode_attribute_filter(raw: str) -> str:
+    """API attribute is an array of strings; live accepts JSON {name,value}."""
+    s = (raw or "").strip()
+    if s.startswith("{") and s.endswith("}"):
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return s
+        if isinstance(obj, dict) and obj.get("name") not in (None, "") and obj.get("value") not in (None, ""):
+            return json.dumps({"name": str(obj["name"]), "value": str(obj["value"])}, ensure_ascii=False)
+        return s
+    if "=" in s:
+        name, value = s.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if name and value:
+            return json.dumps({"name": name, "value": value}, ensure_ascii=False)
+    return s
+
+
+def _append_list_param(q: dict[str, Any], key: str, val: str) -> None:
+    existing = q.get(key)
+    if isinstance(existing, list):
+        q[key] = existing + [val]
+    elif existing:
+        q[key] = [existing, val]
+    else:
+        q[key] = [val]
+
+
 def apply_rules_to_query(scope: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str]]:
     entity = scope.get("entity") or "product"
     fmap = INCLUDE_FIELD_MAP.get(entity, {})
@@ -676,15 +760,16 @@ def apply_rules_to_query(scope: dict[str, Any]) -> tuple[dict[str, Any], list[st
             q["query"] = val
             q.pop("description", None)
             rule_keys.append("query")
-        elif api_field == "attribute":
-            existing = q.get("attribute")
-            if isinstance(existing, list):
-                q["attribute"] = existing + [val]
-            elif existing:
-                q["attribute"] = [existing, val]
-            else:
-                q["attribute"] = [val]
+        elif api_field in ("brand", "model"):
+            val = json.dumps({"name": api_field, "value": val}, ensure_ascii=False)
+            _append_list_param(q, "attribute", val)
             rule_keys.append("attribute")
+        elif api_field == "attribute":
+            _append_list_param(q, "attribute", encode_attribute_filter(val))
+            rule_keys.append("attribute")
+        elif api_field == "keywords":
+            _append_list_param(q, "keywords", val)
+            rule_keys.append("keywords")
         else:
             q[api_field] = val
             rule_keys.append(api_field)
@@ -926,6 +1011,8 @@ def resolve_by(raw: str | None, kind: str, entity: str) -> str:
                 "hint": BY_HINT,
             })
         dim = BY_ALIASES[key]
+        if entity == "shipment" and key in SHIPMENT_BY_OVERRIDE:
+            dim = SHIPMENT_BY_OVERRIDE[key]
     elif kind == "series":
         dim = "year_month"
     elif entity == "shipment":
@@ -1574,7 +1661,10 @@ def build_parser() -> argparse.ArgumentParser:
     ru_sub = ru.add_subparsers(dest="rule_cmd", required=True)
     ru_add = ru_sub.add_parser("add", help="append include rule; exclude is rejected")
     ru_add.add_argument("name")
-    ru_add.add_argument("--include", help='field: value  (text, ncm, country, importer, exporter, attr, place, period)')
+    ru_add.add_argument(
+        "--include",
+        help='field: value  (text, ncm, country, importer, exporter, attr, brand, keywords, place, period)',
+    )
     ru_add.add_argument("--does-not-include", dest="does_not_include", help="rejected: backend cannot apply this")
     ru_add.add_argument("--exclude", help="rejected: backend cannot apply this")
     ru_sub.add_parser("ls")
@@ -1604,11 +1694,11 @@ def build_parser() -> argparse.ArgumentParser:
         "layout", nargs="?", default="breaks",
         choices=["breaks", "stacks", "lines", "dims",
                  "universe-selection-breaks", "universe-selection-stacks", "universe-selection-lines"],
-        help="breaks (2–4 bar charts), stacks, lines, or dims (list product break dimensions)",
+        help="breaks (2–4 bar charts), stacks, lines, or dims (native breaks + refine filters)",
     )
     pan.add_argument(
         "--break", dest="breaks", default="importer,exporter",
-        help="comma dims; breaks accepts 2–4 (default importer,exporter). Example: importer,exporter,origin,manufacturer",
+        help="comma dims; breaks accepts 2–4 (default importer,exporter). Example: importer,exporter,market,state",
     )
     pan.add_argument("--limit", type=int, default=5)
     pan.add_argument("--out", default="")
@@ -1624,7 +1714,7 @@ def build_parser() -> argparse.ArgumentParser:
     lk_save.add_argument("--limit", type=int)
     lk_save.add_argument(
         "--break", dest="breaks", default="importer,exporter",
-        help="comma dims for panel looks; breaks accepts 2–4. Example: importer,exporter,origin,manufacturer",
+        help="comma dims for panel looks; breaks accepts 2–4. Example: importer,exporter,market,state",
     )
     lk_sub.add_parser("ls", help="list saved looks (plus built-in breaks|stacks|lines)")
     lk_show = lk_sub.add_parser("show", help="print look JSON")
