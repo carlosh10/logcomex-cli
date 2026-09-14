@@ -259,10 +259,10 @@ def money_plain(v: float) -> str:
 def render_file(payload: dict[str, Any], out: Path) -> Path:
     tmp = Path("/tmp/lx-panel-payload.json")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    py = HERE / ".venv" / "bin" / "python"
-    if not py.exists():
-        py = Path("/workspace/.venv-charts/bin/python")
+    import shutil
     import subprocess
+    candidates = [HERE / ".venv" / "bin" / "python", Path("/workspace/.venv-charts/bin/python"), Path(sys.executable)]
+    py = next((str(p) for p in candidates if p.exists()), shutil.which("python3") or "python3")
     subprocess.check_call([str(py), str(HERE / "panel.py"), str(tmp), str(out)])
     return out
 

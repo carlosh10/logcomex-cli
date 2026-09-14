@@ -1423,12 +1423,15 @@ def cmd_panel(args: argparse.Namespace) -> None:
     }.get(args.layout, args.layout)
     raw_dims = [x.strip() for x in (args.breaks or "importer,exporter").split(",") if x.strip()]
     payload = panel_build.build(layout, raw_dims, args.limit or 5)
-    out = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.rsplit("-", 1)[-1])
-    panel_build.render_file(payload, out)
-    env = {"ok": True, "layout": layout, "out": str(out), "title": payload.get("title"), "selection": (payload.get("selection") or {}).get("label")}
-    out_json = dict(env)
-    # keep png path for the agent to attach
-    print(json.dumps(out_json, ensure_ascii=False, indent=2))
+    outfile = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.rsplit("-", 1)[-1])
+    panel_build.render_file(payload, outfile)
+    print(json.dumps({
+        "ok": True,
+        "layout": layout,
+        "out": str(outfile),
+        "title": payload.get("title"),
+        "selection": (payload.get("selection") or {}).get("label"),
+    }, ensure_ascii=False, indent=2))
 
 
 def cmd_look(args: argparse.Namespace) -> None:
