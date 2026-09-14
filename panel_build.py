@@ -170,7 +170,16 @@ def composition(scope: dict[str, Any], by: str, limit: int, months: list[str], s
     outros = others_values(months, sel_points, part_vals)
     if any(v > 1 for v in outros):
         series.append({"label": "Outros", "values": outros})
-    return {"by": used, "label": by, "months": months, "series": series}
+    return {"by": used, "label": lx.dim_label(by, used), "months": months, "series": series}
+
+
+def normalize_dims(dims: list[str], *, max_n: int) -> list[str]:
+    out = [str(x).strip() for x in dims if str(x).strip()]
+    if not out:
+        out = ["importer", "exporter"]
+    if len(out) == 1:
+        out.append("exporter")
+    return out[:max_n]
 
 
 def build(layout: str, breaks: list[str], limit: int, scope: dict | None = None) -> dict[str, Any]:
@@ -186,6 +195,8 @@ def build(layout: str, breaks: list[str], limit: int, scope: dict | None = None)
     months = [p["key"] for p in sel_pts] or [p["key"] for p in uni_pts]
     u_lbl = universe_label(uni_scope)
     s_lbl = selection_label(scope)
+    pair = normalize_dims(breaks, max_n=2)
+    dims = normalize_dims(breaks, max_n=4)
     base = {
         "entity": scope.get("entity") or "product",
         "metric": "fob",
@@ -195,41 +206,44 @@ def build(layout: str, breaks: list[str], limit: int, scope: dict | None = None)
             "1. find    %s · %s ·  universo\n"
             "2. seleção    %s · %s ·  %s do universo\n"
             "3. composição    %s  |  %s"
-            % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot), breaks[0], breaks[1] if len(breaks) > 1 else "")
+            % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot),
+               lx.dim_label(pair[0]), lx.dim_label(pair[1]))
         ),
     }
     if layout == "universe-selection-stacks":
         base["layout"] = layout
         base["title"] = "Universo  →  seleção  →  composição no tempo"
         base["stacks"] = [
-            composition(scope, breaks[0], limit, months, sel_pts),
-            composition(scope, breaks[1] if len(breaks) > 1 else "exporter", limit, months, sel_pts),
+            composition(scope, pair[0], limit, months, sel_pts),
+            composition(scope, pair[1], limit, months, sel_pts),
         ]
         return base
     if layout == "universe-selection-lines":
         base["layout"] = layout
         base["title"] = "Universo  →  seleção  →  5 séries no tempo"
-        la = composition(scope, breaks[0], limit, months, sel_pts)
-        lb = composition(scope, breaks[1] if len(breaks) > 1 else "exporter", limit, months, sel_pts)
+        la = composition(scope, pair[0], limit, months, sel_pts)
+        lb = composition(scope, pair[1], limit, months, sel_pts)
         for block in (la, lb):
             block["series"] = [s for s in block.get("series") or [] if (s.get("label") or "").lower() != "outros"]
-            block["label"] = {"importer":"importador","exporter":"exportador"}.get(block.get("by"), block.get("label"))
+            block["label"] = lx.dim_label(block.get("by"), block.get("by"))
         base["lines"] = [la, lb]
         return base
-    # breaks
-    ba, _u, _ = fetch_agg(scope, breaks[0], limit)
-    bb, _u2, _ = fetch_agg(scope, breaks[1] if len(breaks) > 1 else "exporter", limit)
+    blocks = []
+    titles = []
+    for raw in dims:
+        payload, used, _ = fetch_agg(scope, raw, limit)
+        label = lx.dim_label(raw, used)
+        blocks.append({"by": used, "label": label, "rows": _agg_rows(payload, limit)})
+        titles.append(label)
     base["layout"] = "universe-selection-breaks"
     base["title"] = "Universo  →  seleção  →  quebras"
-    base["breaks"] = [
-        {"by": breaks[0], "label": breaks[0], "rows": _agg_rows(ba, limit)},
-        {"by": breaks[1] if len(breaks) > 1 else "exporter", "label": breaks[1] if len(breaks) > 1 else "exporter", "rows": _agg_rows(bb, limit)},
-    ]
+    base["breaks"] = blocks
     base["subtitle"] = (
         "1. find    %s · %s\n"
         "2. seleção    %s · %s ·  %s do universo\n"
-        "3. quebra    %s  |  %s"
-        % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot), breaks[0], breaks[1] if len(breaks) > 1 else "exporter")
+        "3. quebra    %s"
+        % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot),
+           "  |  ".join(titles))
     )
     return base
 
@@ -258,7 +272,8 @@ def main() -> None:
     p = argparse.ArgumentParser(prog="lx-panel")
     p.add_argument("--layout", default="universe-selection-breaks",
                    choices=["universe-selection-breaks", "universe-selection-stacks", "universe-selection-lines", "breaks", "stacks", "lines"])
-    p.add_argument("--break", dest="breaks", default="importer,exporter")
+    p.add_argument("--break", dest="breaks", default="importer,exporter",
+                   help="comma dims; breaks accepts 2–4 (default importer,exporter). Example: importer,exporter,origin,manufacturer")
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--out", default="")
     args = p.parse_args()
@@ -267,9 +282,7 @@ def main() -> None:
         "stacks": "universe-selection-stacks",
         "lines": "universe-selection-lines",
     }.get(args.layout, args.layout)
-    dims = [x.strip() for x in args.breaks.split(",") if x.strip()] or ["importer", "exporter"]
-    if len(dims) == 1:
-        dims.append("exporter")
+    dims = normalize_dims([x.strip() for x in args.breaks.split(",") if x.strip()], max_n=4)
     payload = build(layout, dims, args.limit)
     out = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.split("-")[-1])
     render_file(payload, out)

@@ -152,7 +152,7 @@ def _parse_breaks(raw: str | list[str] | None) -> list[str]:
         dims = ["importer", "exporter"]
     if len(dims) == 1:
         dims.append("exporter")
-    return dims
+    return dims[:4]
 
 
 def look_from_scope(

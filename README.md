@@ -52,12 +52,15 @@ lx profile company <entity_id>
 Três layouts reutilizáveis, mesmo recorte:
 
 ```bash
-lx panel breaks     # universo no tempo → zoom da seleção → ranking
-lx panel stacks     # composição mês a mês (empilhado, inclui Outros)
-lx panel lines      # 5 séries no tempo (sem Outros)
+lx panel breaks     # universo no tempo → zoom da seleção → ranking (2–4 quebras)
+lx panel stacks     # composição mês a mês (empilhado, inclui Outros; 2 dims)
+lx panel lines      # 5 séries no tempo (sem Outros; 2 dims)
+lx panel dims       # dimensões de quebra de produto + ranking p/ brief
 ```
 
-`--break importer,exporter` (padrão). `--out arquivo.png`.
+`--break importer,exporter` (padrão, 2 quebras). Até 4: `--break importer,exporter,origin,manufacturer`. `--out arquivo.png`.
+
+`lx view agg --by` aceita as mesmas dimensões (e aliases: `origin`/`country` → `origin_country`, `unit` → `commercial_unit`, `fabricante` → `manufacturer`, `notify_party` → `notify`). `year_month` é série, não quebra de categoria.
 
 Exemplos (NCM 22042100 · cabernet franc · 12m):
 

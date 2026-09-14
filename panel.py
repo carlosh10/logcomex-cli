@@ -166,11 +166,20 @@ def render_lines(payload, out):
     plt.close(fig)
 
 
+BAR_COLORS = [PURPLE, ORANGE, "#7a5aa8", "#d4783d"]
+
+
 def render_breaks(payload: dict, out: Path) -> None:
-    fig = plt.figure(figsize=(11.4, 11.0))
+    breaks = payload.get("breaks") or []
+    extra = len(breaks) > 2
+    fig = plt.figure(figsize=(11.4, 13.8 if extra else 11.0))
     fig.patch.set_facecolor(BG)
-    gs = GridSpec(3, 2, figure=fig, height_ratios=[1.0, 1.0, 1.12], hspace=0.55, wspace=0.32,
-                  left=0.10, right=0.97, top=0.78, bottom=0.06)
+    if extra:
+        gs = GridSpec(4, 2, figure=fig, height_ratios=[0.95, 0.95, 1.08, 1.08],
+                      hspace=0.50, wspace=0.32, left=0.10, right=0.97, top=0.80, bottom=0.05)
+    else:
+        gs = GridSpec(3, 2, figure=fig, height_ratios=[1.0, 1.0, 1.12],
+                      hspace=0.55, wspace=0.32, left=0.10, right=0.97, top=0.78, bottom=0.06)
     header(fig, payload)
     uni = payload["universe"]
     sel = payload["selection"]
@@ -178,11 +187,12 @@ def render_breaks(payload: dict, out: Path) -> None:
                 "Universo no tempo     %s" % money(uni.get("total") or 0), "M")
     draw_series(fig.add_subplot(gs[1, :]), sel["points"], ORANGE,
                 "Zoom na seleção     mesmo eixo de tempo, outra escala     %s" % money(sel.get("total") or 0), "k")
-    breaks = payload.get("breaks") or []
-    if len(breaks) >= 1:
-        draw_bars(fig.add_subplot(gs[2, 0]), breaks[0]["rows"], "Quebra · %s" % breaks[0]["label"], PURPLE)
-    if len(breaks) >= 2:
-        draw_bars(fig.add_subplot(gs[2, 1]), breaks[1]["rows"], "Quebra · %s" % breaks[1]["label"], ORANGE)
+    slots = ((2, 0), (2, 1), (3, 0), (3, 1))
+    for i, block in enumerate(breaks[:4]):
+        row, col = slots[i]
+        color = BAR_COLORS[i % len(BAR_COLORS)]
+        draw_bars(fig.add_subplot(gs[row, col]), block.get("rows") or [],
+                  "Quebra · %s" % block.get("label"), color)
     fig.savefig(out, dpi=160, facecolor=fig.get_facecolor())
     plt.close(fig)
 
