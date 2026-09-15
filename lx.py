@@ -34,6 +34,7 @@ INCLUDE_FIELD_MAP = {
         "ncm": "ncm", "country": "origin_country", "origin": "origin_country",
         "origin_country": "origin_country", "importer": "importer", "party": "importer",
         "exporter": "exporter", "attr": "attribute", "attribute": "attribute",
+        "keywords": "keywords", "keyword": "keywords", "brand": "brand", "model": "model",
         "place": "destination_port_name", "port": "destination_port_name", "period": "period",
     },
     "company": {"text": "query", "query": "query", "name": "query", "party": "query"},
@@ -105,6 +106,69 @@ DIM_LABELS_PT = {
 
 DEFAULT_BREAKS = "importer,exporter,market,state"
 
+# OpenAPI GET /products/analyses dimension enum.
+PRODUCT_ANALYSES_DIMS = (
+    "product", "ncm", "market", "company", "state", "commercial_unit",
+    "importer", "exporter", "manufacturer", "notify", "year_month",
+)
+
+# Typical product-brief ranking. year_month is series-only, not a category break.
+PRODUCT_BREAK_DIMS = [
+    {"rank": 1, "dimension": "importer", "aliases": ["importer"], "label": "importador"},
+    {"rank": 2, "dimension": "exporter", "aliases": ["exporter"], "label": "exportador"},
+    {
+        "rank": 3, "dimension": "market",
+        "aliases": ["market", "origin", "origem", "origin_country", "country"],
+        "label": "mercado / origem",
+        "note": "practical origin break; dimension=origin_country returns 400",
+    },
+    {"rank": 4, "dimension": "manufacturer", "aliases": ["manufacturer", "fabricante"], "label": "fabricante"},
+    {"rank": 5, "dimension": "ncm", "aliases": ["ncm"], "label": "NCM"},
+    {"rank": 6, "dimension": "commercial_unit", "aliases": ["commercial_unit", "unit"], "label": "unidade comercial"},
+    {"rank": 7, "dimension": "product", "aliases": ["product"], "label": "produto"},
+    {"rank": 8, "dimension": "notify", "aliases": ["notify", "notify_party"], "label": "notify"},
+    {"rank": 9, "dimension": "state", "aliases": ["state"], "label": "estado"},
+]
+
+# Card / filter refine — NOT analyses dimensions (brand|model → 400).
+PRODUCT_REFINE = {
+    "note": (
+        "Refine the selection (query / keywords / attribute). Not panel bars. "
+        "brand and model are card fields and attribute filters; dimension=brand|model returns 400. "
+        "Optional future Helmuth ask: dimension=brand|model."
+    ),
+    "card_fields": ["brand", "model", "keywords", "description", "attributesMain"],
+    "filters": [
+        {
+            "via": "--text",
+            "maps_to": "query",
+            "example": "lx find product --ncm 94013900 --period 12m --text gamer",
+        },
+        {
+            "via": "lx rule add NAME --include 'keywords: …'",
+            "maps_to": "keywords",
+            "example": "lx rule add kw --include 'keywords: gamer chair'",
+        },
+        {
+            "via": "lx rule add NAME --include 'attr: {\"name\",\"value\"}'",
+            "maps_to": "attribute",
+            "shape": {"name": "brand", "value": "THUNDERX3"},
+            "example": "lx rule add brand --include 'attr: {\"name\":\"brand\",\"value\":\"THUNDERX3\"}'",
+            "also": "attr: brand=THUNDERX3   or   brand: THUNDERX3",
+        },
+        {
+            "via": "description",
+            "maps_to": "description",
+            "example": "lx rule add desc --include 'description: cadeira gamer'",
+        },
+    ],
+    "attributes_main": [
+        "brand", "color", "year", "packed", "electric_current",
+        "composition", "destination", "dimensions",
+    ],
+    "not_dimensions": ["brand", "model"],
+}
+
 
 def dim_label(raw: str | None, used: str | None = None) -> str:
     key = (used or raw or "").strip().lower()
@@ -114,6 +178,30 @@ def dim_label(raw: str | None, used: str | None = None) -> str:
     if mapped and mapped in DIM_LABELS_PT:
         return DIM_LABELS_PT[mapped]
     return used or raw or ""
+
+
+def product_break_dims() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "entity": "product",
+        "openapi": list(PRODUCT_ANALYSES_DIMS),
+        "series": {
+            "dimension": "year_month",
+            "aliases": ["month", "year_month"],
+            "note": "year_month is for series, not a category break",
+        },
+        "breaks": list(PRODUCT_BREAK_DIMS),
+        "also": [
+            {
+                "dimension": "company",
+                "aliases": ["company"],
+                "label": "empresa",
+                "note": "OpenAPI product analyses; unusual in a typical product brief",
+            },
+        ],
+        "refine": dict(PRODUCT_REFINE),
+        "hint": "lx panel breaks --break importer,exporter,market,state",
+    }
 
 
 # Product origin_country wants a name; ISO-2 CL returns 200 with 0 rows.
@@ -619,6 +707,35 @@ def expand_origin_country(value: str, entity: str, region: str | None) -> tuple[
     return raw, None
 
 
+def encode_attribute_filter(raw: str) -> str:
+    """API attribute is an array of strings; live accepts JSON {name,value}."""
+    s = (raw or "").strip()
+    if s.startswith("{") and s.endswith("}"):
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return s
+        if isinstance(obj, dict) and obj.get("name") not in (None, "") and obj.get("value") not in (None, ""):
+            return json.dumps({"name": str(obj["name"]), "value": str(obj["value"])}, ensure_ascii=False)
+        return s
+    if "=" in s:
+        name, value = s.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if name and value:
+            return json.dumps({"name": name, "value": value}, ensure_ascii=False)
+    return s
+
+
+def _append_list_param(q: dict[str, Any], key: str, val: str) -> None:
+    existing = q.get(key)
+    if isinstance(existing, list):
+        q[key] = existing + [val]
+    elif existing:
+        q[key] = [existing, val]
+    else:
+        q[key] = [val]
+
+
 def apply_rules_to_query(scope: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str]]:
     entity = scope.get("entity") or "product"
     fmap = INCLUDE_FIELD_MAP.get(entity, {})
@@ -646,15 +763,16 @@ def apply_rules_to_query(scope: dict[str, Any]) -> tuple[dict[str, Any], list[st
             q["query"] = val
             q.pop("description", None)
             rule_keys.append("query")
-        elif api_field == "attribute":
-            existing = q.get("attribute")
-            if isinstance(existing, list):
-                q["attribute"] = existing + [val]
-            elif existing:
-                q["attribute"] = [existing, val]
-            else:
-                q["attribute"] = [val]
+        elif api_field in ("brand", "model"):
+            val = json.dumps({"name": api_field, "value": val}, ensure_ascii=False)
+            _append_list_param(q, "attribute", val)
             rule_keys.append("attribute")
+        elif api_field == "attribute":
+            _append_list_param(q, "attribute", encode_attribute_filter(val))
+            rule_keys.append("attribute")
+        elif api_field == "keywords":
+            _append_list_param(q, "keywords", val)
+            rule_keys.append("keywords")
         else:
             q[api_field] = val
             rule_keys.append(api_field)
@@ -1384,6 +1502,9 @@ def add_period_flags(p: argparse.ArgumentParser, *, default_period: str | None =
 
 
 def cmd_panel(args: argparse.Namespace) -> None:
+    if args.layout == "dims":
+        out(product_break_dims())
+        return
     import panel_build
     layout = {
         "breaks": "universe-selection-breaks",
@@ -1393,12 +1514,10 @@ def cmd_panel(args: argparse.Namespace) -> None:
     raw_dims = [x.strip() for x in (args.breaks or DEFAULT_BREAKS).split(",") if x.strip()]
     dims = panel_build.normalize_dims(raw_dims, layout=layout)
     payload = panel_build.build(layout, dims, args.limit or 5)
-    out = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.rsplit("-", 1)[-1])
-    panel_build.render_file(payload, out)
-    env = {"ok": True, "layout": layout, "out": str(out), "title": payload.get("title"), "selection": (payload.get("selection") or {}).get("label")}
-    out_json = dict(env)
-    # keep png path for the agent to attach
-    print(json.dumps(out_json, ensure_ascii=False, indent=2))
+    outfile = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.rsplit("-", 1)[-1])
+    panel_build.render_file(payload, outfile)
+    env = {"ok": True, "layout": layout, "out": str(outfile), "title": payload.get("title"), "selection": (payload.get("selection") or {}).get("label")}
+    print(json.dumps(env, ensure_ascii=False, indent=2))
 
 
 def cmd_look(args: argparse.Namespace) -> None:
@@ -1541,7 +1660,10 @@ def build_parser() -> argparse.ArgumentParser:
     ru_sub = ru.add_subparsers(dest="rule_cmd", required=True)
     ru_add = ru_sub.add_parser("add", help="append include rule; exclude is rejected")
     ru_add.add_argument("name")
-    ru_add.add_argument("--include", help='field: value  (text, ncm, country, importer, exporter, attr, place, period)')
+    ru_add.add_argument(
+        "--include",
+        help='field: value  (text, ncm, country, importer, exporter, attr, brand, keywords, place, period)',
+    )
     ru_add.add_argument("--does-not-include", dest="does_not_include", help="rejected: backend cannot apply this")
     ru_add.add_argument("--exclude", help="rejected: backend cannot apply this")
     ru_sub.add_parser("ls")
@@ -1550,7 +1672,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vw = sub.add_parser("view", help="rows|agg|series|graph for current scope")
     vw.add_argument("kind", choices=["rows", "agg", "series", "graph"])
-    vw.add_argument("--by", help=BY_HINT)
+    vw.add_argument("--by", help=BY_HINT + "  (lx panel dims)")
     vw.add_argument("--metric", default="fob")
     vw.add_argument("--limit", type=int)
     vw.add_argument("--cursor")
@@ -1566,13 +1688,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("watch", help="re-run series + agg on current scope (not a daemon)")
 
-    pan = sub.add_parser("panel", help="reusable intel panel: breaks | stacks | lines")
-    pan.add_argument("layout", nargs="?", default="breaks",
-                     choices=["breaks", "stacks", "lines", "universe-selection-breaks", "universe-selection-stacks", "universe-selection-lines"])
+    pan = sub.add_parser("panel", help="reusable intel panel: breaks | stacks | lines | dims")
+    pan.add_argument(
+        "layout", nargs="?", default="breaks",
+        choices=["breaks", "stacks", "lines", "dims",
+                 "universe-selection-breaks", "universe-selection-stacks", "universe-selection-lines"],
+        help="breaks (2 or 4 bar charts), stacks, lines, or dims (native breaks + refine filters)",
+    )
     pan.add_argument(
         "--break", dest="breaks", default=DEFAULT_BREAKS,
         help="comma dims. breaks: 2 or 4 only (default importer,exporter,market,state → 2×2). "
-             "Classic 2-chart: --break importer,exporter. origin/country → market. Not attribute.",
+             "Classic 2-chart: --break importer,exporter. origin/country → market. Not attribute/brand/model. "
+             "See lx panel dims.",
     )
     pan.add_argument("--limit", type=int, default=5)
     pan.add_argument("--out", default="")
@@ -1583,12 +1710,12 @@ def build_parser() -> argparse.ArgumentParser:
     lk_save.add_argument("name")
     lk_save.add_argument("--view", choices=["rows", "agg", "series", "graph"])
     lk_save.add_argument("--layout", choices=["breaks", "stacks", "lines"])
-    lk_save.add_argument("--by", help=BY_HINT)
+    lk_save.add_argument("--by", help=BY_HINT + "  (lx panel dims)")
     lk_save.add_argument("--metric", default="fob")
     lk_save.add_argument("--limit", type=int)
     lk_save.add_argument(
         "--break", dest="breaks", default=DEFAULT_BREAKS,
-        help="comma dims for panel looks; breaks accepts 2 or 4. Default importer,exporter,market,state",
+        help="comma dims for panel looks; breaks accepts 2 or 4. Default importer,exporter,market,state. See lx panel dims.",
     )
     lk_sub.add_parser("ls", help="list saved looks (plus built-in breaks|stacks|lines)")
     lk_show = lk_sub.add_parser("show", help="print look JSON")
