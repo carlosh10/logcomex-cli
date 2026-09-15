@@ -1,11 +1,13 @@
 {
   "id": "universe-selection-breaks",
   "title": "Universo → seleção → quebras",
-  "use": "Macro to micro: time of the full find, time of the refined selection, then two category breaks of that selection.",
+  "use": "Macro to micro: time of the full find, time of the refined selection, then 2 or 4 category breaks. Default is importer,exporter,market,state (2 series + 2×2 bars). Classic two-break: importer,exporter. origin/country alias to market. Attribute/brand/model are refine filters, not extra bar charts.",
   "steps": [
     {"slot": "universe", "view": "series", "by": "year_month"},
     {"slot": "selection", "view": "series", "by": "year_month"},
     {"slot": "break_a", "view": "agg", "by": "importer", "limit": 5},
-    {"slot": "break_b", "view": "agg", "by": "exporter", "limit": 5}
+    {"slot": "break_b", "view": "agg", "by": "exporter", "limit": 5},
+    {"slot": "break_c", "view": "agg", "by": "market", "limit": 5},
+    {"slot": "break_d", "view": "agg", "by": "state", "limit": 5}
   ]
 }

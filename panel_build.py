@@ -170,7 +170,46 @@ def composition(scope: dict[str, Any], by: str, limit: int, months: list[str], s
     outros = others_values(months, sel_points, part_vals)
     if any(v > 1 for v in outros):
         series.append({"label": "Outros", "values": outros})
-    return {"by": used, "label": by, "months": months, "series": series}
+    return {"by": used, "label": lx.dim_label(by, used), "months": months, "series": series}
+
+
+REFINE_DIMS = {"attribute", "attr", "brand", "model", "keywords", "query", "description"}
+ORIGIN_TO_MARKET = {"origin": "market", "origem": "market", "country": "market", "origin_country": "market"}
+DEFAULT_BREAKS = ["importer", "exporter", "market", "state"]
+DEFAULT_PAIR = ["importer", "exporter"]
+
+
+def normalize_dims(dims: list[str], *, layout: str = "universe-selection-breaks") -> list[str]:
+    """Resolve aliases; breaks allow only 2 or 4 dims (no attribute fan-out)."""
+    out = [str(x).strip() for x in dims if str(x).strip()]
+    is_breaks = layout in ("universe-selection-breaks", "breaks") or not layout
+    if not out:
+        out = list(DEFAULT_BREAKS if is_breaks else DEFAULT_PAIR)
+    mapped = []
+    for raw in out:
+        key = raw.lower()
+        if key in REFINE_DIMS:
+            lx.fail({
+                "error": "refine_not_break",
+                "got": raw,
+                "hint": "attribute/brand/model are filters (lx rule add), not panel bars. "
+                        "Use 2 or 4 of: importer,exporter,market,state",
+            })
+        mapped.append(ORIGIN_TO_MARKET.get(key, key))
+    out = mapped
+    if not is_breaks:
+        if len(out) == 1:
+            out.append("exporter")
+        return out[:2]
+    if len(out) not in (2, 4):
+        lx.fail({
+            "error": "invalid_breaks",
+            "got": out,
+            "n": len(out),
+            "hint": "lx panel breaks --break importer,exporter,market,state  (2 or 4 dims). "
+                    "Classic: --break importer,exporter",
+        })
+    return out
 
 
 def build(layout: str, breaks: list[str], limit: int, scope: dict | None = None) -> dict[str, Any]:
@@ -186,6 +225,9 @@ def build(layout: str, breaks: list[str], limit: int, scope: dict | None = None)
     months = [p["key"] for p in sel_pts] or [p["key"] for p in uni_pts]
     u_lbl = universe_label(uni_scope)
     s_lbl = selection_label(scope)
+    dims = normalize_dims(breaks, layout=layout)
+    pair = dims[:2] if len(dims) >= 2 else list(DEFAULT_PAIR)
+    pair_lbl = [lx.dim_label(d) for d in pair]
     base = {
         "entity": scope.get("entity") or "product",
         "metric": "fob",
@@ -195,41 +237,44 @@ def build(layout: str, breaks: list[str], limit: int, scope: dict | None = None)
             "1. find    %s · %s ·  universo\n"
             "2. seleção    %s · %s ·  %s do universo\n"
             "3. composição    %s  |  %s"
-            % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot), breaks[0], breaks[1] if len(breaks) > 1 else "")
+            % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot),
+               pair_lbl[0], pair_lbl[1])
         ),
     }
     if layout == "universe-selection-stacks":
         base["layout"] = layout
         base["title"] = "Universo  →  seleção  →  composição no tempo"
         base["stacks"] = [
-            composition(scope, breaks[0], limit, months, sel_pts),
-            composition(scope, breaks[1] if len(breaks) > 1 else "exporter", limit, months, sel_pts),
+            composition(scope, pair[0], limit, months, sel_pts),
+            composition(scope, pair[1], limit, months, sel_pts),
         ]
         return base
     if layout == "universe-selection-lines":
         base["layout"] = layout
         base["title"] = "Universo  →  seleção  →  5 séries no tempo"
-        la = composition(scope, breaks[0], limit, months, sel_pts)
-        lb = composition(scope, breaks[1] if len(breaks) > 1 else "exporter", limit, months, sel_pts)
+        la = composition(scope, pair[0], limit, months, sel_pts)
+        lb = composition(scope, pair[1], limit, months, sel_pts)
         for block in (la, lb):
             block["series"] = [s for s in block.get("series") or [] if (s.get("label") or "").lower() != "outros"]
-            block["label"] = {"importer":"importador","exporter":"exportador"}.get(block.get("by"), block.get("label"))
+            block["label"] = lx.dim_label(block.get("by"), block.get("by"))
         base["lines"] = [la, lb]
         return base
-    # breaks
-    ba, _u, _ = fetch_agg(scope, breaks[0], limit)
-    bb, _u2, _ = fetch_agg(scope, breaks[1] if len(breaks) > 1 else "exporter", limit)
+    blocks = []
+    titles = []
+    for raw in dims:
+        payload, used, _ = fetch_agg(scope, raw, limit)
+        label = lx.dim_label(raw, used)
+        blocks.append({"by": used, "label": label, "rows": _agg_rows(payload, limit)})
+        titles.append(label)
     base["layout"] = "universe-selection-breaks"
     base["title"] = "Universo  →  seleção  →  quebras"
-    base["breaks"] = [
-        {"by": breaks[0], "label": breaks[0], "rows": _agg_rows(ba, limit)},
-        {"by": breaks[1] if len(breaks) > 1 else "exporter", "label": breaks[1] if len(breaks) > 1 else "exporter", "rows": _agg_rows(bb, limit)},
-    ]
+    base["breaks"] = blocks
     base["subtitle"] = (
         "1. find    %s · %s\n"
         "2. seleção    %s · %s ·  %s do universo\n"
-        "3. quebra    %s  |  %s"
-        % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot), breaks[0], breaks[1] if len(breaks) > 1 else "exporter")
+        "3. quebra    %s"
+        % (u_lbl, money_plain(uni_tot), s_lbl, money_plain(sel_tot), share_pct(sel_tot, uni_tot),
+           "  |  ".join(titles))
     )
     return base
 
@@ -245,10 +290,10 @@ def money_plain(v: float) -> str:
 def render_file(payload: dict[str, Any], out: Path) -> Path:
     tmp = Path("/tmp/lx-panel-payload.json")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    py = HERE / ".venv" / "bin" / "python"
-    if not py.exists():
-        py = Path("/workspace/.venv-charts/bin/python")
+    import shutil
     import subprocess
+    candidates = [HERE / ".venv" / "bin" / "python", Path("/workspace/.venv-charts/bin/python"), Path(sys.executable)]
+    py = next((str(p) for p in candidates if Path(p).exists()), shutil.which("python3") or "python3")
     subprocess.check_call([str(py), str(HERE / "panel.py"), str(tmp), str(out)])
     return out
 
@@ -258,7 +303,10 @@ def main() -> None:
     p = argparse.ArgumentParser(prog="lx-panel")
     p.add_argument("--layout", default="universe-selection-breaks",
                    choices=["universe-selection-breaks", "universe-selection-stacks", "universe-selection-lines", "breaks", "stacks", "lines"])
-    p.add_argument("--break", dest="breaks", default="importer,exporter")
+    p.add_argument(
+        "--break", dest="breaks", default="importer,exporter,market,state",
+        help="comma dims; breaks accepts 2 or 4 (default importer,exporter,market,state). Classic: importer,exporter",
+    )
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--out", default="")
     args = p.parse_args()
@@ -267,9 +315,7 @@ def main() -> None:
         "stacks": "universe-selection-stacks",
         "lines": "universe-selection-lines",
     }.get(args.layout, args.layout)
-    dims = [x.strip() for x in args.breaks.split(",") if x.strip()] or ["importer", "exporter"]
-    if len(dims) == 1:
-        dims.append("exporter")
+    dims = normalize_dims([x.strip() for x in args.breaks.split(",") if x.strip()], layout=layout)
     payload = build(layout, dims, args.limit)
     out = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.split("-")[-1])
     render_file(payload, out)

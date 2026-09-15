@@ -31,7 +31,7 @@ BUILTIN_LOOKS: dict[str, dict[str, Any]] = {
         "kind": "panel",
         "layout": name,
         "selection": {},
-        "breaks": ["importer", "exporter"],
+        "breaks": ["importer", "exporter", "market", "state"] if name == "breaks" else ["importer", "exporter"],
     }
     for name in ("breaks", "stacks", "lines")
 }
@@ -147,11 +147,9 @@ def _parse_breaks(raw: str | list[str] | None) -> list[str]:
     if isinstance(raw, list):
         dims = [str(x).strip() for x in raw if str(x).strip()]
     else:
-        dims = [x.strip() for x in (raw or "importer,exporter").split(",") if x.strip()]
+        dims = [x.strip() for x in (raw or "importer,exporter,market,state").split(",") if x.strip()]
     if not dims:
-        dims = ["importer", "exporter"]
-    if len(dims) == 1:
-        dims.append("exporter")
+        dims = ["importer", "exporter", "market", "state"]
     return dims
 
 

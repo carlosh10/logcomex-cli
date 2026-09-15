@@ -47,12 +47,74 @@ INCLUDE_FIELD_MAP = {
     },
 }
 
+# Product analyses enum: product, ncm, market, company, state, commercial_unit,
+# importer, exporter, manufacturer, notify, year_month.
+# origin/country → market (dimension=origin_country 400s on products/analyses).
 BY_ALIASES = {
-    "month": "year_month", "year_month": "year_month", "importer": "importer",
-    "exporter": "exporter", "origin": "origin_country", "origin_country": "origin_country",
-    "ncm": "ncm", "country": "origin_country", "consignee": "consignee",
-    "shipper": "shipper", "product": "product",
+    "month": "year_month",
+    "year_month": "year_month",
+    "importer": "importer",
+    "exporter": "exporter",
+    "origin": "market",
+    "origem": "market",
+    "origin_country": "market",
+    "country": "market",
+    "ncm": "ncm",
+    "product": "product",
+    "market": "market",
+    "company": "company",
+    "state": "state",
+    "commercial_unit": "commercial_unit",
+    "unit": "commercial_unit",
+    "manufacturer": "manufacturer",
+    "fabricante": "manufacturer",
+    "notify": "notify",
+    "notify_party": "notify",
+    "consignee": "consignee",
+    "shipper": "shipper",
 }
+
+SHIPMENT_BY_OVERRIDE = {
+    "origin": "origin_country",
+    "origem": "origin_country",
+    "origin_country": "origin_country",
+    "country": "country",
+}
+
+BY_HINT = (
+    "month|year_month|importer|exporter|origin|country|market|state|"
+    "ncm|product|company|commercial_unit|manufacturer|notify|consignee|shipper"
+)
+
+DIM_LABELS_PT = {
+    "importer": "importador",
+    "exporter": "exportador",
+    "market": "mercado",
+    "state": "estado",
+    "manufacturer": "fabricante",
+    "ncm": "NCM",
+    "commercial_unit": "unidade comercial",
+    "product": "produto",
+    "notify": "notify",
+    "company": "empresa",
+    "year_month": "mês",
+    "consignee": "consignatário",
+    "shipper": "embarcador",
+    "origin_country": "origem",
+}
+
+DEFAULT_BREAKS = "importer,exporter,market,state"
+
+
+def dim_label(raw: str | None, used: str | None = None) -> str:
+    key = (used or raw or "").strip().lower()
+    if key in DIM_LABELS_PT:
+        return DIM_LABELS_PT[key]
+    mapped = BY_ALIASES.get(key)
+    if mapped and mapped in DIM_LABELS_PT:
+        return DIM_LABELS_PT[mapped]
+    return used or raw or ""
+
 
 # Product origin_country wants a name; ISO-2 CL returns 200 with 0 rows.
 ISO_ORIGIN = {
@@ -831,9 +893,11 @@ def resolve_by(raw: str | None, kind: str, entity: str) -> str:
             fail({
                 "error": "unknown_by",
                 "got": raw,
-                "hint": "month|year_month|importer|exporter|origin|origin_country|ncm|country|consignee",
+                "hint": BY_HINT,
             })
         dim = BY_ALIASES[key]
+        if entity == "shipment" and key in SHIPMENT_BY_OVERRIDE:
+            dim = SHIPMENT_BY_OVERRIDE[key]
     elif kind == "series":
         dim = "year_month"
     elif entity == "shipment":
@@ -1326,9 +1390,8 @@ def cmd_panel(args: argparse.Namespace) -> None:
         "stacks": "universe-selection-stacks",
         "lines": "universe-selection-lines",
     }.get(args.layout, args.layout)
-    dims = [x.strip() for x in (args.breaks or "importer,exporter").split(",") if x.strip()] or ["importer", "exporter"]
-    if len(dims) == 1:
-        dims.append("exporter")
+    raw_dims = [x.strip() for x in (args.breaks or DEFAULT_BREAKS).split(",") if x.strip()]
+    dims = panel_build.normalize_dims(raw_dims, layout=layout)
     payload = panel_build.build(layout, dims, args.limit or 5)
     out = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.rsplit("-", 1)[-1])
     panel_build.render_file(payload, out)
@@ -1487,7 +1550,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vw = sub.add_parser("view", help="rows|agg|series|graph for current scope")
     vw.add_argument("kind", choices=["rows", "agg", "series", "graph"])
-    vw.add_argument("--by", help="month|year_month|importer|exporter|origin|ncm|country|consignee")
+    vw.add_argument("--by", help=BY_HINT)
     vw.add_argument("--metric", default="fob")
     vw.add_argument("--limit", type=int)
     vw.add_argument("--cursor")
@@ -1506,7 +1569,11 @@ def build_parser() -> argparse.ArgumentParser:
     pan = sub.add_parser("panel", help="reusable intel panel: breaks | stacks | lines")
     pan.add_argument("layout", nargs="?", default="breaks",
                      choices=["breaks", "stacks", "lines", "universe-selection-breaks", "universe-selection-stacks", "universe-selection-lines"])
-    pan.add_argument("--break", dest="breaks", default="importer,exporter")
+    pan.add_argument(
+        "--break", dest="breaks", default=DEFAULT_BREAKS,
+        help="comma dims. breaks: 2 or 4 only (default importer,exporter,market,state → 2×2). "
+             "Classic 2-chart: --break importer,exporter. origin/country → market. Not attribute.",
+    )
     pan.add_argument("--limit", type=int, default=5)
     pan.add_argument("--out", default="")
 
@@ -1516,10 +1583,13 @@ def build_parser() -> argparse.ArgumentParser:
     lk_save.add_argument("name")
     lk_save.add_argument("--view", choices=["rows", "agg", "series", "graph"])
     lk_save.add_argument("--layout", choices=["breaks", "stacks", "lines"])
-    lk_save.add_argument("--by", help="month|year_month|importer|exporter|origin|ncm|country|consignee")
+    lk_save.add_argument("--by", help=BY_HINT)
     lk_save.add_argument("--metric", default="fob")
     lk_save.add_argument("--limit", type=int)
-    lk_save.add_argument("--break", dest="breaks", default="importer,exporter")
+    lk_save.add_argument(
+        "--break", dest="breaks", default=DEFAULT_BREAKS,
+        help="comma dims for panel looks; breaks accepts 2 or 4. Default importer,exporter,market,state",
+    )
     lk_sub.add_parser("ls", help="list saved looks (plus built-in breaks|stacks|lines)")
     lk_show = lk_sub.add_parser("show", help="print look JSON")
     lk_show.add_argument("name")
