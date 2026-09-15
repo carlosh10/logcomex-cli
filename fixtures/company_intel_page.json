@@ -1,0 +1,45 @@
+{
+  "query_id": "q-fixture-vinho-12m",
+  "totais": {
+    "linhas": 70957,
+    "linhas_retornadas": 2,
+    "exato": true
+  },
+  "empresas": [
+    {
+      "codigo": "12345678000190",
+      "name": "VINICOLA EXEMPLO LTDA",
+      "perfil": "Importador",
+      "nivel_atividade": "Alto",
+      "ultima_atividade_comercio_exterior": "2026-07-01",
+      "endereco": "Rua Exemplo 100",
+      "cnae": "4637-1/02",
+      "city": "São Paulo",
+      "ufs": ["SP"],
+      "score": 80,
+      "macro_segmento": "Bebidas",
+      "segmento": "Vinhos",
+      "sub_segmento": "Vinho fino",
+      "total_fob": 5000000,
+      "total_shipments": 40,
+      "list_modal": ["maritimo"],
+      "ufs_distintos": 2,
+      "inteligencia_12m": {
+        "fob_12m": 2500000,
+        "faixa_fob": "1M|-10M",
+        "somavel_entre_estabelecimentos": false
+      }
+    },
+    {
+      "codigo": "98765432000111",
+      "name": "IMPORTADORA DE VINHOS SUL",
+      "perfil": "Importador",
+      "city": "Porto Alegre",
+      "ufs": ["RS"],
+      "inteligencia_12m": {
+        "fob_12m": 150000,
+        "faixa_fob": "0|-1M"
+      }
+    }
+  ]
+}

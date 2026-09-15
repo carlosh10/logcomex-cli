@@ -13,7 +13,7 @@ import pytest
 import lx
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI_MODULES = ("lx.py", "panel.py", "panel_build.py", "catalog.py")
+CLI_MODULES = ("lx.py", "panel.py", "panel_build.py", "catalog.py", "company_intel.py")
 
 
 def _cookie(name: str, value: str, *, expires: int | None, discard: bool) -> Cookie:

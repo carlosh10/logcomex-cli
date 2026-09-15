@@ -12,8 +12,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import lx  # noqa: E402
 
-DROP_FOR_UNIVERSE = {"query", "description", "keywords", "attribute"}
-TEXT_FIELDS = {"text", "query", "description", "attr", "attribute", "brand", "model", "keywords", "keyword"}
+DROP_FOR_UNIVERSE = {"query", "description", "keywords", "attribute", "descricao_produto"}
+TEXT_FIELDS = {"text", "query", "description", "attr", "attribute", "brand", "model", "keywords", "keyword", "descricao_produto"}
 
 
 def _val(row: dict[str, Any]) -> float:
@@ -126,6 +126,8 @@ def selection_label(scope: dict[str, Any]) -> str:
         return str(f["query"])
     if f.get("description"):
         return str(f["description"])
+    if f.get("descricao_produto"):
+        return str(f["descricao_produto"])
     for r in scope.get("rules") or []:
         if str(r.get("field") or "").lower() in TEXT_FIELDS:
             return str(r.get("value") or "")
