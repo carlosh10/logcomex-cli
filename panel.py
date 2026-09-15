@@ -116,7 +116,7 @@ def draw_bars(ax, rows: list, title: str, color: str, compact: bool = False) -> 
     # Room for an end-label without clipping; long bars get the label inside.
     ax.set_xlim(0, xmax * 1.22)
     for y, val in zip(ys, reversed(values)):
-        label = money(val, axis=True, scale=scale)
+        label = money(val, axis=True)
         inside = val >= xmax * 0.58
         ax.text(
             val - xmax * 0.03 if inside else val + xmax * 0.03,
