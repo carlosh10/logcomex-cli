@@ -55,9 +55,29 @@ Três layouts reutilizáveis, mesmo recorte:
 lx panel breaks     # universo no tempo → zoom da seleção → 2×2 quebras
 lx panel stacks     # composição mês a mês (empilhado, inclui Outros)
 lx panel lines      # 5 séries no tempo (sem Outros)
+lx panel dims       # dimensões de quebra de produto + ranking p/ brief
 ```
 
 `--break importer,exporter,market,state` (padrão, 2 séries + 2×2 barras). Clássico 2 quebras: `--break importer,exporter`. Só 2 ou 4 dims; `origin`/`country` → `market`. `--out arquivo.png`.
+
+`lx view agg --by` aceita só o enum de `/products/analyses`. Ranking e aliases: `lx panel dims`.
+
+### Quebras nativas vs refino
+
+**Quebras** (`lx view agg --by` / `lx panel --break`) — só o enum. Ranking e aliases: `lx panel dims`.
+
+**Refino** (não é barra de painel) — estreita o recorte. `brand` e `model` aparecem no card (`brand`, `model`, `keywords`, `description`, `attributesMain`) e como filtro `attribute` `{name,value}`. Live: `name=brand` (ex. THUNDERX3). `dimension=brand` e `dimension=model` dão 400 — não inventar histograma de marca como quebra nativa. Pedido futuro ao Helmuth: `dimension=brand|model`.
+
+`--text` no `find` vira `query`. Não há `--attribute` / `--keywords` no find; use `rule add --include`:
+
+```bash
+lx find product --ncm 94013900 --period 12m --text "gamer"
+lx rule add brand --include 'attr: {"name":"brand","value":"THUNDERX3"}'
+lx rule add brand --include "brand: THUNDERX3"          # mesmo filtro
+lx rule add kw --include "keywords: gamer chair"
+```
+
+`attributesMain` comuns em gamer / air fryer / vinho: `brand`, `color`, `year`, `packed`, `electric_current`, `composition`, `destination`, `dimensions`.
 
 Exemplos (NCM 22042100 · cabernet franc · 12m):
 
@@ -98,7 +118,7 @@ Não use `explore`/`look` como sinônimo de `find`/`view`. Os verbos continuam f
 
 1. `does-not-include` e regras no **universo**, não na página.
 2. Tag / `--by tag` no agregado e na série.
-3. OpenAPI com enum de `dimension` (`importer`, `exporter`, `year_month`…). `dimension=month` dá 400.
+3. OpenAPI com enum de `dimension` (`importer`, `exporter`, `market`, `year_month`…). `dimension=month` e `dimension=origin_country` dão 400 no produto — origem prática é `market`. `dimension=brand|model` também 400.
 4. Envelope estável: `{contract, success, scope, coverage, totals, data, nextCursor, warnings}`. Coverage honesto no `/graph`.
 5. Auth de serviço (API key / service-session). Cookie + OTP não escala pra agente.
 6. Um nome só: hoje `/products/analyses` é agregado; `/company-analyses` é job de chat.

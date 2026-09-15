@@ -13,7 +13,7 @@ sys.path.insert(0, str(HERE))
 import lx  # noqa: E402
 
 DROP_FOR_UNIVERSE = {"query", "description", "keywords", "attribute"}
-TEXT_FIELDS = {"text", "query", "description", "attr", "attribute"}
+TEXT_FIELDS = {"text", "query", "description", "attr", "attribute", "brand", "model", "keywords", "keyword"}
 
 
 def _val(row: dict[str, Any]) -> float:
@@ -193,7 +193,7 @@ def normalize_dims(dims: list[str], *, layout: str = "universe-selection-breaks"
                 "error": "refine_not_break",
                 "got": raw,
                 "hint": "attribute/brand/model are filters (lx rule add), not panel bars. "
-                        "Use 2 or 4 of: importer,exporter,market,state",
+                        "Use 2 or 4 of: importer,exporter,market,state. See lx panel dims.",
             })
         mapped.append(ORIGIN_TO_MARKET.get(key, key))
     out = mapped
