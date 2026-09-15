@@ -19,6 +19,8 @@ from http.cookiejar import LWPCookieJar
 from pathlib import Path
 from typing import Any
 
+import company_intel
+
 BASE = os.environ.get("LX_BASE", "https://platform.logcomex.ai").rstrip("/")
 CFG = Path(os.environ.get("LX_HOME", Path.home() / ".config" / "lx"))
 COOKIE_PATH = CFG / "cookies.txt"
@@ -27,7 +29,8 @@ CURRENT_SCOPE_PATH = CFG / "current-scope.json"
 SCOPES_DIR = CFG / "scopes"
 LOOKS_DIR = CFG / "looks"
 DASH_DIR = CFG / "dashboards"
-UA = "lx-cli/0.2 (grok-bot)"
+INTEL_JOBS_DIR = CFG / "intel-jobs"
+UA = "lx-cli/0.3 (grok-bot)"
 
 INCLUDE_FIELD_MAP = {
     "product": {
@@ -38,7 +41,14 @@ INCLUDE_FIELD_MAP = {
         "keywords": "keywords", "keyword": "keywords", "brand": "brand", "model": "model",
         "place": "destination_port_name", "port": "destination_port_name", "period": "period",
     },
-    "company": {"text": "query", "query": "query", "name": "query", "party": "query"},
+    "company": {
+        "text": "descricao_produto", "query": "descricao_produto",
+        "description": "descricao_produto", "descricao_produto": "descricao_produto",
+        "name": "descricao_produto", "pais": "pais", "country": "pais",
+        "categoria": "categoria", "profile": "categoria", "perfil": "categoria",
+        "fob_12m": "fob_12m", "fob_total": "fob_total",
+        "ultima_operacao": "ultima_operacao", "period": "period",
+    },
     "shipment": {
         "text": "query", "query": "query", "ncm": "ncm", "hs": "hs_code", "hs_code": "hs_code",
         "country": "country", "origin": "origin_country", "origin_country": "origin_country",
@@ -677,6 +687,7 @@ def _ensure_cfg() -> None:
     SCOPES_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
     LOOKS_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
     DASH_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+    INTEL_JOBS_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
 
 
 def _safe_scope_name(name: str) -> str:
@@ -726,27 +737,32 @@ def envelope_scope(scope: dict[str, Any] | None) -> dict[str, Any] | None:
     }
     if scope.get("region"):
         out_s["region"] = scope["region"]
+    if scope.get("entity") == "company":
+        out_s["backend"] = scope.get("backend") or company_intel.SOURCE
     return out_s
 
 
 def parse_include(raw: str) -> tuple[str, str]:
-    s = (raw or "").strip()
-    if not s:
-        fail({"error": "empty_include", "hint": '--include "field: value"'})
-    for sep in (":", "="):
-        if sep in s:
-            field, value = s.split(sep, 1)
-            field, value = field.strip().lower(), value.strip()
-            if field and value:
-                return field, value
-    parts = s.split(None, 1)
-    if len(parts) != 2 or not parts[0] or not parts[1]:
+    parsed = parse_include_full(raw)
+    return parsed["field"], str(parsed["value"])
+
+
+def parse_include_full(raw: str) -> dict[str, str]:
+    try:
+        parsed = company_intel.parse_include_rule(raw)
+    except ValueError:
         fail({
             "error": "bad_include",
             "got": raw,
-            "hint": '--include "field: value"  or  field=value  or  field value',
+            "hint": '--include "field: value"  or  field>1000  or  --field fob_12m --op gt --value 1000000',
         })
-    return parts[0].strip().lower(), parts[1].strip()
+    if not parsed.get("field") or parsed.get("value") in (None, ""):
+        fail({
+            "error": "bad_include",
+            "got": raw,
+            "hint": '--include "field: value"  or  field>1000  or  --field fob_12m --op gt --value 1000000',
+        })
+    return parsed
 
 
 def expand_origin_country(value: str, entity: str, region: str | None) -> tuple[str, str | None]:
@@ -1096,19 +1112,48 @@ def intel_query(scope: dict[str, Any], extra: dict[str, Any] | None = None) -> t
 
 def company_view_unsupported(kind: str) -> None:
     fail({
-        "error": "unsupported",
-        "entity": "company",
+        **company_intel.UNSUPPORTED_AGG,
         "kind": kind,
-        "hint": "only rows and profile work for company without backend; /company-analyses is saved chat jobs, not an aggregate",
     })
+
+
+def _company_cached_payload(scope: dict[str, Any]) -> Any | None:
+    cached = company_intel.cached_result(scope)
+    if cached:
+        return cached
+    fixture = os.environ.get("LX_COMPANY_INTEL_FIXTURE")
+    if fixture:
+        path = Path(fixture)
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                return None
+            if isinstance(data, dict):
+                return data
+    return None
+
+
+def fetch_company_intel(scope: dict[str, Any]) -> tuple[Any, list[str]]:
+    """Return a cached/fixture company-intel page. Never hits GET /companies."""
+    payload = _company_cached_payload(scope)
+    args, warnings = company_intel.apply_company_rules(scope)
+    if payload is None:
+        fail({
+            **company_intel.JOB_REQUIRED,
+            "entity": "company",
+            "scope": envelope_scope(scope),
+            "tool": company_intel.planned_job(scope),
+            "warnings": warnings,
+        })
+    return payload, warnings
 
 
 def fetch_rows(scope: dict[str, Any], extra: dict[str, Any] | None = None) -> tuple[Any, list[str]]:
     q, warnings, rule_keys = intel_query(scope, extra)
     entity = scope.get("entity")
     if entity == "company":
-        q = filter_query(q, COMPANY_FILTER_KEYS)
-        return request("GET", "/api/market-intelligence/companies", query=q, fatal=False), warnings
+        return fetch_company_intel(scope)
     if entity == "shipment":
         region = scope.get("region") or "br"
         if region == "latam" and not q.get("country"):
@@ -1199,10 +1244,8 @@ def build_find_scope(args: argparse.Namespace) -> dict[str, Any]:
     text = getattr(args, "text", None) or getattr(args, "text_pos", None)
 
     if entity == "company":
-        if text:
-            filters["query"] = text
-        if args.limit is not None:
-            filters["limit"] = args.limit
+        scope["backend"] = company_intel.SOURCE
+        filters.update(company_intel.company_find_filters(args))
         return scope
 
     if entity == "shipment":
@@ -1269,6 +1312,14 @@ def cmd_find(args: argparse.Namespace) -> None:
         return
     scope = build_find_scope(args)
     save_current_scope(scope)
+    if scope.get("entity") == "company":
+        # Company intel has no deterministic GET. Do not hit the catalog.
+        env = company_intel.find_envelope(scope)
+        if getattr(args, "raw", False):
+            out({"scope": scope, "tool": env.get("next")})
+            return
+        out(env)
+        return
     extra: dict[str, Any] = {}
     if args.limit is not None:
         extra["limit"] = args.limit
@@ -1360,19 +1411,43 @@ def cmd_rule(args: argparse.Namespace) -> None:
         save_current_scope(scope)
         out({"ok": True, "removed": name, "scope": envelope_scope(scope)})
         return
-    if cmd != "add":
-        fail({"error": "unknown_rule_cmd", "hint": "lx rule add NAME --include 'field: value' | ls | rm NAME"})
+    if cmd not in ("add", "include"):
+        fail({
+            "error": "unknown_rule_cmd",
+            "hint": "lx rule include --field fob_12m --op gt --value 1000000 | add NAME --include 'field: value' | ls | rm NAME",
+        })
     if getattr(args, "does_not_include", None):
         _reject_exclude("does-not-include", args.does_not_include)
     if getattr(args, "exclude", None):
         _reject_exclude("exclude", args.exclude)
-    if not args.include:
-        fail({"error": "need_include", "hint": "lx rule add NAME --include 'field: value'"})
     scope = require_scope()
-    field, value = parse_include(args.include)
-    verb = "include"
-    rule = {"name": args.name, "verb": verb, "field": field, "value": value}
-    rules = [r for r in (scope.get("rules") or []) if not (isinstance(r, dict) and r.get("name") == args.name)]
+    parsed: dict[str, str] | None = None
+    if getattr(args, "field", None):
+        if getattr(args, "value", None) in (None, ""):
+            fail({"error": "need_value", "hint": "lx rule include --field fob_12m --op gt --value 1000000"})
+        parsed = {
+            "field": company_intel.canon_field(args.field),
+            "value": str(args.value),
+        }
+        if getattr(args, "op", None):
+            op = company_intel.normalize_op(args.op)
+            if not op:
+                fail({"error": "unknown_op", "got": args.op, "hint": "gt|gte|lt|lte|eq|desde|maior|maior_igual|menor"})
+            parsed["op"] = op
+    elif getattr(args, "include", None):
+        parsed = parse_include_full(args.include)
+    else:
+        fail({
+            "error": "need_include",
+            "hint": "lx rule include --field fob_12m --op gt --value 1000000   or   lx rule add NAME --include 'field: value'",
+        })
+    name = getattr(args, "name", None) if cmd == "add" else None
+    if not name:
+        name = company_intel.rule_name(parsed["field"], parsed.get("op"), parsed["value"])
+    rule = {"name": name, "verb": "include", "field": parsed["field"], "value": parsed["value"]}
+    if parsed.get("op"):
+        rule["op"] = parsed["op"]
+    rules = [r for r in (scope.get("rules") or []) if not (isinstance(r, dict) and r.get("name") == name)]
     rules.append(rule)
     scope["rules"] = rules
     save_current_scope(scope)
@@ -1385,6 +1460,26 @@ def cmd_view(args: argparse.Namespace) -> None:
     kind = args.kind
     metric = args.metric or "fob"
     limit = args.limit if args.limit is not None else (40 if kind == "graph" else 25)
+    if entity == "company" and kind in ("rows", "count"):
+        payload, warnings = fetch_company_intel(scope)
+        if args.raw:
+            out(payload)
+            return
+        env = company_intel.result_envelope(scope, payload, kind=kind, limit=limit, extra_warnings=warnings)
+        out(env)
+        return
+    if entity == "company" and kind in ("agg", "series", "graph"):
+        company_view_unsupported(kind)
+    if kind == "count":
+        payload, warnings = fetch_rows(scope, {"limit": 1})
+        if args.raw:
+            out(payload)
+            return
+        env = make_envelope(entity=entity, scope=scope, payload=payload, data=None, extra_warnings=warnings)
+        if not env["ok"]:
+            fail(env)
+        out(env)
+        return
     if kind == "rows":
         extra: dict[str, Any] = {"limit": limit}
         if args.cursor:
@@ -1451,6 +1546,31 @@ def _view_compact_block(kind: str, scope: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_watch(_: argparse.Namespace) -> None:
     scope = require_scope()
+    if scope.get("entity") == "company":
+        payload = _company_cached_payload(scope)
+        if payload is None:
+            count = {**company_intel.JOB_REQUIRED, "ok": False, "tool": company_intel.planned_job(scope)}
+        else:
+            _, warnings = company_intel.apply_company_rules(scope)
+            env = company_intel.result_envelope(scope, payload, kind="count", extra_warnings=warnings)
+            count = {
+                "ok": True,
+                "totals": env.get("totals"),
+                "coverage": env.get("coverage"),
+                "warnings": env.get("warnings"),
+            }
+        refused = {**company_intel.UNSUPPORTED_AGG, "ok": False}
+        out({
+            "ok": bool(count.get("ok")),
+            "scope": envelope_scope(scope),
+            "count": count,
+            "series": refused,
+            "agg": refused,
+            "warnings": [
+                "company watch is count + refused series/agg — no native histogram",
+            ],
+        })
+        return
     series = _view_compact_block("series", scope)
     agg = _view_compact_block("agg", scope)
     out({
@@ -1467,13 +1587,37 @@ def cmd_profile(args: argparse.Namespace) -> None:
     if kind == "company":
         eid = args.id
         if not eid:
-            fail({"error": "need_id", "hint": "lx profile company ENTITY_ID"})
+            fail({"error": "need_id", "hint": "lx profile company ENTITY_ID_OR_CNPJ"})
+        scope = load_current_scope()
+        cached = company_intel.cached_result(scope) if scope and scope.get("entity") == "company" else None
+        if cached:
+            want = company_intel.normalize_cnpj(eid)
+            for row in company_intel.compact_intel_rows(cached, 200):
+                if not isinstance(row, dict):
+                    continue
+                codes = {company_intel.normalize_cnpj(row.get(k)) for k in ("codigo", "cnpj", "entityId", "code")}
+                if eid in {row.get("codigo"), row.get("cnpj"), row.get("entityId"), row.get("name")} or (want and want in codes):
+                    env = company_intel.result_envelope(scope or {"entity": "company", "filters": {}, "rules": []}, {"empresas": [row], "totais": (cached.get("totais") if isinstance(cached, dict) else {})}, kind="rows", limit=1)
+                    env["data"] = company_intel.project_intel_row(row)
+                    env["warnings"] = list(env.get("warnings") or []) + ["row from cached company-intel page (not a new query)"]
+                    if raw:
+                        out(row)
+                        return
+                    out(env)
+                    return
         payload = request("GET", f"/api/market-intelligence/companies/{urllib.parse.quote(eid)}", fatal=False)
+        if is_http_error(payload) and company_intel.looks_like_cnpj(eid):
+            payload = request("GET", "/api/market-intelligence/companies", query={"query": company_intel.normalize_cnpj(eid), "limit": 5}, fatal=False)
         if raw:
             out(payload)
             return
         if is_http_error(payload):
-            fail({"error": payload.get("error"), "status": payload.get("status"), "body": payload.get("body")})
+            fail({
+                "error": payload.get("error"),
+                "status": payload.get("status"),
+                "body": payload.get("body"),
+                "hint": "catalog GET /companies/{id}; full RFB+trade profile is lx intel query (logcomex_company_profile)",
+            })
         data = project_row(payload, COMPANY_ROW_KEYS) if isinstance(payload, dict) else payload
         if isinstance(payload, dict) and isinstance(payload.get("artifacts"), list):
             arts = []
@@ -1482,7 +1626,12 @@ def cmd_profile(args: argparse.Namespace) -> None:
                     arts.append({k: a.get(k) for k in ("id", "title", "kind", "section") if a.get(k)})
             if isinstance(data, dict) and arts:
                 data["artifacts"] = arts
-        out(make_envelope(entity="company", scope=None, payload=payload, data=data))
+        env = make_envelope(entity="company", scope=scope if scope and scope.get("entity") == "company" else None, payload=payload, data=data)
+        env["warnings"] = list(env.get("warnings") or []) + [
+            "this is the thin company catalog card (GET /companies), not company_rds intel",
+            "full intel profile: lx intel query --tool logcomex_company_profile",
+        ]
+        out(env)
         return
     if kind == "product":
         ncm = args.ncm or args.id
@@ -1543,6 +1692,249 @@ def cmd_profile(args: argparse.Namespace) -> None:
         }
         data = {k: v for k, v in data.items() if v not in (None, "", [], {})}
     out(make_envelope(entity="shipment", scope=None, payload=payload, data=data))
+
+
+def _intel_job_path(run_id: str) -> Path:
+    return INTEL_JOBS_DIR / f"{run_id}.json"
+
+
+def _save_intel_job(job: dict[str, Any]) -> Path:
+    _ensure_cfg()
+    run_id = str(job.get("runId") or job.get("run_id") or "unknown")
+    path = _intel_job_path(run_id)
+    path.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n")
+    path.chmod(0o600)
+    return path
+
+
+def _load_intel_job(run_id: str) -> dict[str, Any]:
+    path = _intel_job_path(run_id)
+    if not path.exists():
+        fail({"error": "intel_job_not_found", "runId": run_id, "hint": "lx intel query"})
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        fail({"error": "invalid_intel_job", "runId": run_id})
+    return data
+
+
+def _pick_id(payload: Any, *keys: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for k in keys:
+        v = payload.get(k)
+        if v:
+            return str(v)
+    return None
+
+
+def _resolve_connection_and_model(args: argparse.Namespace) -> tuple[str, str, list[str]]:
+    warnings: list[str] = []
+    sess = load_session()
+    intel_sess = sess.get("intel") if isinstance(sess.get("intel"), dict) else {}
+    connection_id = (
+        getattr(args, "connection_id", None)
+        or os.environ.get("LX_CONNECTION_ID")
+        or intel_sess.get("connectionId")
+    )
+    model = getattr(args, "model", None) or os.environ.get("LX_MODEL") or intel_sess.get("model")
+    if not connection_id:
+        conns = request("GET", "/api/connections", fatal=False)
+        rows = _as_list(conns)
+        if len(rows) == 1:
+            connection_id = str(rows[0].get("id") or rows[0].get("connectionId") or "")
+            warnings.append("used the only LLM connection")
+        elif rows:
+            fail({
+                "error": "connection_required",
+                "hint": "lx intel query --connection-id UUID  (chat-run rejects managed/max without connectionId)",
+                "connections": [
+                    {"id": r.get("id") or r.get("connectionId"), "name": r.get("name") or r.get("label")}
+                    for r in rows[:12]
+                ],
+            })
+        else:
+            fail({
+                "error": "connection_required",
+                "hint": "lx intel query --connection-id UUID — POST /conversations without it → ModelProviderError",
+                "body": conns if is_http_error(conns) else None,
+            })
+    if not model:
+        models = request("GET", "/api/models", query={"connectionId": connection_id}, fatal=False)
+        rows = _as_list(models)
+        if rows:
+            model = str(rows[0].get("id") or rows[0].get("name") or rows[0].get("model") or "")
+            warnings.append(f"defaulted model to {model} from GET /api/models")
+        if not model:
+            fail({
+                "error": "model_required",
+                "hint": "lx intel query --model MODEL --connection-id UUID",
+                "body": models if is_http_error(models) else None,
+            })
+    return str(connection_id), str(model), warnings
+
+
+def cmd_intel(args: argparse.Namespace) -> None:
+    cmd = args.intel_cmd
+    if cmd == "query":
+        scope = require_scope()
+        if scope.get("entity") != "company":
+            fail({
+                "error": "company_scope_required",
+                "hint": "lx find company --pais BRASIL --categoria importadores --period 12m --text vinho",
+                "scope": envelope_scope(scope),
+            })
+        tool = getattr(args, "tool", None) or company_intel.TOOL_ID
+        map_w: list[str] = []
+        if tool == company_intel.PROFILE_TOOL_ID:
+            content = company_intel.profile_prompt(
+                cnpj=getattr(args, "cnpj", None) or getattr(args, "id", None),
+                name=getattr(args, "name", None),
+                pais=(scope.get("filters") or {}).get("pais"),
+            )
+            enabled = [company_intel.PROFILE_TOOL_ID]
+        else:
+            arguments, map_w = company_intel.apply_company_rules(scope)
+            content = company_intel.query_prompt(arguments)
+            enabled = [company_intel.TOOL_ID]
+        connection_id, model, warn = _resolve_connection_and_model(args)
+        conv_body = {"model": model, "connectionId": connection_id}
+        conv = request("POST", "/api/conversations", body=conv_body, fatal=False)
+        if is_http_error(conv):
+            fail({"error": "conversation_failed", "status": conv.get("status"), "body": conv.get("body")})
+        cid = _pick_id(conv, "id", "conversationId", "conversation_id")
+        if not cid:
+            fail({"error": "conversation_id_missing", "body": conv})
+        tools_body = {
+            "automaticToolGroups": [company_intel.TOOL_GROUP],
+            "enabledTools": enabled,
+        }
+        put = request("PUT", f"/api/conversations/{urllib.parse.quote(cid)}/tools", body=tools_body, fatal=False)
+        if is_http_error(put):
+            fail({"error": "tools_failed", "status": put.get("status"), "body": put.get("body"), "conversationId": cid})
+        request_id = company_intel.new_request_id()
+        chat_body = {
+            "requestId": request_id,
+            "content": content,
+            "model": model,
+            "connectionId": connection_id,
+            "automaticToolGroups": [company_intel.TOOL_GROUP],
+            "enabledTools": enabled,
+        }
+        accepted = request("POST", f"/api/conversations/{urllib.parse.quote(cid)}/chat-runs", body=chat_body, fatal=False)
+        if is_http_error(accepted):
+            fail({"error": "chat_run_failed", "status": accepted.get("status"), "body": accepted.get("body"), "conversationId": cid})
+        run_id = _pick_id(accepted, "runId", "run_id") or ""
+        job = {
+            "conversationId": cid,
+            "runId": run_id,
+            "requestId": accepted.get("requestId") if isinstance(accepted, dict) else request_id,
+            "status": accepted.get("status") if isinstance(accepted, dict) else "queued",
+            "streamUrl": accepted.get("streamUrl") if isinstance(accepted, dict) else None,
+            "statusUrl": accepted.get("statusUrl") if isinstance(accepted, dict) else None,
+            "tool": tool,
+            "model": model,
+            "connectionId": connection_id,
+            "scope": envelope_scope(scope),
+        }
+        path = _save_intel_job(job)
+        sess = load_session()
+        sess["intel"] = {"connectionId": connection_id, "model": model, "lastRunId": run_id, "conversationId": cid}
+        save_session(sess)
+        intel_meta = dict(scope.get("intel") or {})
+        intel_meta["job"] = {"conversationId": cid, "runId": run_id, "status": job["status"]}
+        intel_meta["backend"] = company_intel.SOURCE
+        intel_meta["tool"] = tool
+        scope["intel"] = intel_meta
+        save_current_scope(scope)
+        env = {
+            "ok": True,
+            "contract": company_intel.CONTRACT,
+            "entity": "company",
+            "scope": envelope_scope(scope),
+            "coverage": None,
+            "totals": None,
+            "data": None,
+            "next": {"action": "lx intel wait" if not getattr(args, "wait", False) else "lx intel result", "job": job},
+            "warnings": warn + list(map_w if tool != company_intel.PROFILE_TOOL_ID else []) + [
+                "chat-run accepted — this is not a deterministic GET and is not instant",
+                "poll with lx intel status|wait; never sum a page",
+            ],
+            "job": job,
+            "path": str(path),
+        }
+        if getattr(args, "wait", False) and run_id:
+            env = _intel_wait(run_id, timeout=getattr(args, "timeout", None) or 180)
+        out(env)
+        return
+    if cmd == "status":
+        run_id = args.id or (load_session().get("intel") or {}).get("lastRunId")
+        if not run_id:
+            fail({"error": "need_run_id", "hint": "lx intel status RUN_ID"})
+        state = request("GET", f"/api/chat-runs/{urllib.parse.quote(str(run_id))}", fatal=False)
+        if is_http_error(state):
+            fail({"error": "http", "status": state.get("status"), "body": state.get("body")})
+        out({"ok": True, "runId": run_id, "state": state})
+        return
+    if cmd == "wait":
+        run_id = args.id or (load_session().get("intel") or {}).get("lastRunId")
+        if not run_id:
+            fail({"error": "need_run_id", "hint": "lx intel wait RUN_ID"})
+        out(_intel_wait(str(run_id), timeout=getattr(args, "timeout", None) or 180))
+        return
+    if cmd == "result":
+        run_id = args.id or (load_session().get("intel") or {}).get("lastRunId")
+        if not run_id:
+            fail({"error": "need_run_id", "hint": "lx intel result RUN_ID"})
+        out(_intel_collect_result(str(run_id)))
+        return
+    fail({"error": "unknown_intel_cmd", "hint": "lx intel query|status|wait|result"})
+
+
+def _intel_wait(run_id: str, *, timeout: int) -> dict[str, Any]:
+    import time
+    deadline = time.time() + max(1, timeout)
+    state: Any = None
+    while time.time() < deadline:
+        state = request("GET", f"/api/chat-runs/{urllib.parse.quote(run_id)}", fatal=False)
+        if is_http_error(state):
+            return {"ok": False, "error": "http", "status": state.get("status"), "body": state.get("body"), "runId": run_id}
+        status = (state or {}).get("status") if isinstance(state, dict) else None
+        if status in ("completed", "failed", "interrupted", "cancelled"):
+            result = _intel_collect_result(run_id, state=state)
+            result["state"] = state
+            return result
+        time.sleep(2)
+    return {
+        "ok": False,
+        "error": "timeout",
+        "runId": run_id,
+        "state": state,
+        "hint": "lx intel status|result — chat-run still in flight",
+    }
+
+
+def _intel_collect_result(run_id: str, state: Any = None) -> dict[str, Any]:
+    events = request("GET", f"/api/chat-runs/{urllib.parse.quote(run_id)}/events", query={"limit": 1000}, fatal=False)
+    if is_http_error(events):
+        return {"ok": False, "error": "http", "status": events.get("status"), "body": events.get("body"), "runId": run_id}
+    parsed = company_intel.parse_events_for_intel(events)
+    scope = load_current_scope() or {"entity": "company", "filters": {}, "rules": []}
+    job = {"runId": run_id, "status": (state or {}).get("status") if isinstance(state, dict) else None}
+    if parsed:
+        company_intel.attach_result(scope, parsed, job=job)
+        save_current_scope(scope)
+        env = company_intel.result_envelope(scope, parsed, kind="rows")
+        env["job"] = job
+        env["warnings"] = list(env.get("warnings") or []) + ["parsed totais.linhas from chat-run events"]
+        return env
+    return {
+        "ok": False,
+        "error": "intel_result_not_parsed",
+        "runId": run_id,
+        "hint": "chat-run events had no totais.linhas payload; inspect with --raw after a completed run",
+        "scope": envelope_scope(scope),
+        "events_terminal": events.get("terminal") if isinstance(events, dict) else None,
+    }
 
 
 def add_period_flags(p: argparse.ArgumentParser, *, default_period: str | None = "latest", default_limit: int | None = 25) -> None:
@@ -1666,7 +2058,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lx",
-        description="Logcomex platform CLI for agents. Prefer find/scope/rule/view/profile/watch/panel/look/dashboard.",
+        description="Logcomex platform CLI for agents. Prefer find/scope/rule/view/profile/watch/intel/panel/look/dashboard.",
         allow_abbrev=False,
     )
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1693,12 +2085,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     find = sub.add_parser("find", help="set current scope and print compact rows")
     find.add_argument("entity", nargs="?", choices=["product", "company", "shipment"], help="omit to show current scope")
-    find.add_argument("text_pos", nargs="?", help="search text (company) or query")
-    find.add_argument("--text", help="free-text / query")
+    find.add_argument("text_pos", nargs="?", help="product query, or company descricao_produto")
+    find.add_argument("--text", help="product: query; company intel: descricao_produto (do not send query)")
     find.add_argument("--ncm")
     find.add_argument("--importer")
     find.add_argument("--exporter")
     find.add_argument("--country", help="origin country (product) or latam country ISO")
+    find.add_argument("--pais", help="company intel: pais (e.g. BRASIL)")
+    find.add_argument("--categoria", help="company intel: categoria (e.g. importadores)")
+    find.add_argument("--fob-12m-min", dest="fob_12m_min", help="company intel: fob_12m_min")
+    find.add_argument("--fob-12m-max", dest="fob_12m_max", help="company intel: fob_12m_max")
+    find.add_argument("--fob-total-min", dest="fob_total_min", help="company intel: fob_total_min")
+    find.add_argument("--fob-total-max", dest="fob_total_max", help="company intel: fob_total_max")
     find.add_argument("--region", choices=["br", "latam", "mx"], help="shipment region")
     find.add_argument("--container")
     find.add_argument("--vessel")
@@ -1726,31 +2124,60 @@ def build_parser() -> argparse.ArgumentParser:
     ru_add.add_argument("name")
     ru_add.add_argument(
         "--include",
-        help='field: value  (text, ncm, country, importer, exporter, attr, brand, keywords, place, period)',
+        help='field: value  (text, ncm, country, importer, exporter, attr, brand, keywords, place, period, fob_12m>1000000)',
     )
+    ru_add.add_argument("--field", help="include field (company intel: fob_12m, pais, categoria, …)")
+    ru_add.add_argument("--op", help="gt|gte|lt|lte|eq|desde (maps to maior/maior_igual/menor/…)")
+    ru_add.add_argument("--value", help="include value")
     ru_add.add_argument("--does-not-include", dest="does_not_include", help="rejected: backend cannot apply this")
     ru_add.add_argument("--exclude", help="rejected: backend cannot apply this")
+    ru_inc = ru_sub.add_parser("include", help="append include rule without a required name")
+    ru_inc.add_argument("--include", help='field: value  or  fob_12m>1000000')
+    ru_inc.add_argument("--field", help="e.g. fob_12m")
+    ru_inc.add_argument("--op", help="gt|gte|lt|lte|eq|desde")
+    ru_inc.add_argument("--value")
+    ru_inc.add_argument("--does-not-include", dest="does_not_include", help="rejected: backend cannot apply this")
+    ru_inc.add_argument("--exclude", help="rejected: backend cannot apply this")
     ru_sub.add_parser("ls")
     ru_rm = ru_sub.add_parser("rm")
     ru_rm.add_argument("name")
 
-    vw = sub.add_parser("view", help="rows|agg|series|graph for current scope")
-    vw.add_argument("kind", choices=["rows", "agg", "series", "graph"])
+    vw = sub.add_parser("view", help="rows|agg|series|graph|count for current scope")
+    vw.add_argument("kind", choices=["rows", "agg", "series", "graph", "count"])
     vw.add_argument("--by", help=BY_HINT + "  (lx panel dims)")
     vw.add_argument("--metric", default="fob")
     vw.add_argument("--limit", type=int)
     vw.add_argument("--cursor")
     vw.add_argument("--raw", action="store_true")
 
-    pr = sub.add_parser("profile", help="company ID | product --ncm | shipment TOKEN")
+    pr = sub.add_parser("profile", help="company ID|CNPJ | product --ncm | shipment TOKEN")
     pr.add_argument("kind", choices=["company", "product", "shipment"])
-    pr.add_argument("id", nargs="?", help="company entity_id or shipment token")
+    pr.add_argument("id", nargs="?", help="company entity_id or CNPJ, or shipment token")
     pr.add_argument("--ncm")
     pr.add_argument("--period", choices=["latest", "3m", "6m", "12m", "all"])
     pr.add_argument("--limit", type=int)
     pr.add_argument("--raw", action="store_true")
 
-    sub.add_parser("watch", help="re-run series + agg on current scope (not a daemon)")
+    sub.add_parser("watch", help="re-run series + agg on current scope (company: count only)")
+
+    intel = sub.add_parser("intel", help="chat-run escape hatch for company intelligence (not instant)")
+    intel_sub = intel.add_subparsers(dest="intel_cmd", required=True)
+    iq = intel_sub.add_parser("query", help="POST conversation + chat-run for current company scope")
+    iq.add_argument("--tool", choices=[company_intel.TOOL_ID, company_intel.PROFILE_TOOL_ID], default=company_intel.TOOL_ID)
+    iq.add_argument("--model", help="required by chat-run; default from session or GET /api/models")
+    iq.add_argument("--connection-id", dest="connection_id", help="required; without it managed/max fails")
+    iq.add_argument("--cnpj", help="for logcomex_company_profile")
+    iq.add_argument("--id", help="alias of --cnpj")
+    iq.add_argument("--name", help="exact name for company profile")
+    iq.add_argument("--wait", action="store_true", help="poll until terminal (still a job, not a GET)")
+    iq.add_argument("--timeout", type=int, default=180)
+    ist = intel_sub.add_parser("status", help="GET /api/chat-runs/{id}")
+    ist.add_argument("id", nargs="?")
+    iwa = intel_sub.add_parser("wait", help="poll chat-run until terminal")
+    iwa.add_argument("id", nargs="?")
+    iwa.add_argument("--timeout", type=int, default=180)
+    irs = intel_sub.add_parser("result", help="parse totais.linhas from chat-run events into current scope")
+    irs.add_argument("id", nargs="?")
 
     pan = sub.add_parser("panel", help="reusable intel panel: breaks | stacks | lines | dims")
     pan.add_argument(
@@ -1811,7 +2238,7 @@ def build_parser() -> argparse.ArgumentParser:
     ncm.add_argument("--origin-country", dest="origin_country")
     add_period_flags(ncm)
 
-    company = sub.add_parser("company", help="alias: raw company search/get")
+    company = sub.add_parser("company", help="alias: raw company catalog search/get (not company intel)")
     csub = company.add_subparsers(dest="company_cmd")
     csearch = csub.add_parser("search")
     csearch.add_argument("q", nargs="?", default="")
@@ -1879,6 +2306,7 @@ def main() -> None:
         "view": cmd_view,
         "profile": cmd_profile,
         "watch": cmd_watch,
+        "intel": cmd_intel,
         "panel": cmd_panel,
         "look": cmd_look,
         "dashboard": cmd_dashboard,

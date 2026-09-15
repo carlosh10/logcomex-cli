@@ -19,6 +19,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest matplotlib
       - name: Compile CLI modules
-        run: python -m compileall -q lx.py panel.py panel_build.py catalog.py
+        run: python -m compileall -q lx.py panel.py panel_build.py catalog.py company_intel.py
       - name: Pytest
         run: python -m pytest -q
