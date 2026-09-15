@@ -52,12 +52,12 @@ lx profile company <entity_id>
 Três layouts reutilizáveis, mesmo recorte:
 
 ```bash
-lx panel breaks     # universo no tempo → zoom da seleção → ranking
+lx panel breaks     # universo no tempo → zoom da seleção → 2×2 quebras
 lx panel stacks     # composição mês a mês (empilhado, inclui Outros)
 lx panel lines      # 5 séries no tempo (sem Outros)
 ```
 
-`--break importer,exporter` (padrão). `--out arquivo.png`.
+`--break importer,exporter,market,state` (padrão, 2 séries + 2×2 barras). Clássico 2 quebras: `--break importer,exporter`. Só 2 ou 4 dims; `origin`/`country` → `market`. `--out arquivo.png`.
 
 Exemplos (NCM 22042100 · cabernet franc · 12m):
 
