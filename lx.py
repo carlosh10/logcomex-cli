@@ -7,6 +7,7 @@ JSON on stdout. Secrets live in ~/.config/lx/, never in argv if avoidable.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -272,6 +273,13 @@ def die(msg: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
+class _RejectArgvOtp(argparse.Action):
+    """Refuse `lx login --code`; OTP must not appear on argv (history / ps)."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error("OTP is not taken on argv; use --code-file PATH or enter it at the prompt")
+
+
 def out(data: Any) -> None:
     json.dump(data, sys.stdout, ensure_ascii=False, indent=2, default=str)
     sys.stdout.write("\n")
@@ -302,15 +310,29 @@ def cookie_jar() -> LWPCookieJar:
     jar = LWPCookieJar(str(COOKIE_PATH))
     if COOKIE_PATH.exists():
         try:
-            jar.load(ignore_discard=True, ignore_expires=True)
+            # Reuse only still-valid cookies: skip discarded (session) and expired.
+            jar.load(ignore_discard=False, ignore_expires=False)
         except OSError:
             pass
     return jar
 
 
 def save_jar(jar: LWPCookieJar) -> None:
-    jar.save(ignore_discard=True, ignore_expires=True)
+    # Persist only still-valid cookies; do not keep discarded or expired ones.
+    jar.save(ignore_discard=False, ignore_expires=False)
     COOKIE_PATH.chmod(0o600)
+
+
+def resolve_panel_out(explicit: str, layout: str) -> Path:
+    if explicit:
+        return Path(explicit)
+    return Path.cwd() / ("intel-panel-%s.png" % layout.rsplit("-", 1)[-1])
+
+
+def resolve_dashboard_out(explicit: str) -> Path:
+    if explicit:
+        return Path(explicit)
+    return Path.cwd()
 
 
 def opener(jar: LWPCookieJar) -> urllib.request.OpenerDirector:
@@ -380,7 +402,7 @@ def request(
             die(json.dumps({
                 "error": "unauthenticated",
                 "status": e.code,
-                "hint": "Run: lx login --email you@logcomex.com   then   lx login --email you@logcomex.com --code NNNNNN",
+                "hint": "Run: lx login --email you@logcomex.com   then enter the OTP at the prompt or --code-file PATH",
                 "body": payload,
             }, ensure_ascii=False), 2)
         err = {"error": "http", "status": e.code, "path": path, "body": payload}
@@ -398,19 +420,43 @@ def cmd_health(_: argparse.Namespace) -> None:
     out(request("GET", "/api/health", auth=False))
 
 
+def _secret_from_file(path: str, *, what: str) -> str:
+    text = Path(path).read_text().strip()
+    if not text:
+        die(f"{what}-file empty")
+    return text
+
+
+def _prompt_otp() -> str:
+    try:
+        code = getpass.getpass("OTP code: ").strip()
+    except (EOFError, OSError):
+        die("OTP is not taken on argv; use --code-file PATH or enter it at the prompt")
+    if not code:
+        die("empty OTP")
+    return code
+
+
+def _otp_from_args(args: argparse.Namespace) -> str:
+    if getattr(args, "code_file", None):
+        return _secret_from_file(args.code_file, what="code")
+    return _prompt_otp()
+
+
+def _complete_otp_login(email: str, code: str) -> None:
+    res = request("POST", "/api/auth/logcomex/email-otp/verify", body={"email": email, "code": code}, auth=False)
+    _store_login(email, res)
+    me = _whoami_quiet()
+    _remember_workspace(me)
+    out({"ok": True, "method": "otp", "me": me})
+
+
 def cmd_login(args: argparse.Namespace) -> None:
     email = (args.email or "").strip().lower()
     if not email:
-        die("lx login --email you@company.com [--code 123456 | --password-file PATH]")
-    if args.code:
-        res = request("POST", "/api/auth/logcomex/email-otp/verify", body={"email": email, "code": args.code}, auth=False)
-        _store_login(email, res)
-        me = _whoami_quiet()
-        _remember_workspace(me)
-        out({"ok": True, "method": "otp", "me": me})
-        return
+        die("lx login --email you@company.com [--code-file PATH | --password-file PATH]")
     if args.password_file:
-        pw = Path(args.password_file).read_text().strip()
+        pw = _secret_from_file(args.password_file, what="password")
         if len(pw) < 10:
             die("password-file too short")
         res = request("POST", "/api/auth/login", body={"email": email, "password": pw}, auth=False)
@@ -419,9 +465,21 @@ def cmd_login(args: argparse.Namespace) -> None:
         _remember_workspace(me)
         out({"ok": True, "method": "password", "me": me})
         return
+    if args.code_file:
+        _complete_otp_login(email, _otp_from_args(args))
+        return
     res = request("POST", "/api/auth/logcomex/email-otp/request", body={"email": email}, auth=False)
     save_session({**load_session(), "email": email, "otp_pending": True})
-    out({"ok": True, "otp_sent": True, "email": email, "next": f"lx login --email {email} --code NNNNNN", "server": res})
+    if sys.stdin.isatty():
+        _complete_otp_login(email, _prompt_otp())
+        return
+    out({
+        "ok": True,
+        "otp_sent": True,
+        "email": email,
+        "next": f"lx login --email {email} --code-file PATH",
+        "server": res,
+    })
 
 
 def _store_login(email: str, res: Any) -> None:
@@ -1514,7 +1572,7 @@ def cmd_panel(args: argparse.Namespace) -> None:
     raw_dims = [x.strip() for x in (args.breaks or DEFAULT_BREAKS).split(",") if x.strip()]
     dims = panel_build.normalize_dims(raw_dims, layout=layout)
     payload = panel_build.build(layout, dims, args.limit or 5)
-    outfile = Path(args.out) if args.out else Path("/workspace") / ("intel-panel-%s.png" % layout.rsplit("-", 1)[-1])
+    outfile = resolve_panel_out(args.out, layout)
     panel_build.render_file(payload, outfile)
     env = {"ok": True, "layout": layout, "out": str(outfile), "title": payload.get("title"), "selection": (payload.get("selection") or {}).get("label")}
     print(json.dumps(env, ensure_ascii=False, indent=2))
@@ -1596,7 +1654,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             overrides["ncm"] = args.ncm
         if getattr(args, "text", None):
             overrides["text"] = args.text
-        out_dir = Path(args.out) if args.out else Path("/workspace")
+        out_dir = resolve_dashboard_out(args.out)
         env = catalog.show_dashboard(dash, overrides=overrides, out_dir=out_dir, panel_build=panel_build)
         if not env.get("ok"):
             fail(env)
@@ -1609,6 +1667,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lx",
         description="Logcomex platform CLI for agents. Prefer find/scope/rule/view/profile/watch/panel/look/dashboard.",
+        allow_abbrev=False,
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -1616,9 +1675,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("whoami", help="current user + workspace")
     sub.add_parser("logout")
 
-    login = sub.add_parser("login", help="email OTP (request, then --code)")
+    login = sub.add_parser("login", help="email OTP (prompt or --code-file; never on argv)")
     login.add_argument("--email", required=True)
-    login.add_argument("--code", help="6-digit email OTP")
+    login.add_argument(
+        "--code",
+        action=_RejectArgvOtp,
+        help=argparse.SUPPRESS,
+    )
+    login.add_argument("--code-file", dest="code_file", help="file containing OTP; never pass the code on argv")
     login.add_argument("--password-file", help="file containing password; never pass the password on argv")
 
     ws = sub.add_parser("ws", help="list or switch workspace")
@@ -1702,7 +1766,7 @@ def build_parser() -> argparse.ArgumentParser:
              "See lx panel dims.",
     )
     pan.add_argument("--limit", type=int, default=5)
-    pan.add_argument("--out", default="")
+    pan.add_argument("--out", default="", help="PNG path (default: ./intel-panel-<layout>.png in cwd)")
 
     lk = sub.add_parser("look", help="local named looks in ~/.config/lx/looks/ (this machine only)")
     lk_sub = lk.add_subparsers(dest="look_cmd", required=True)
@@ -1734,7 +1798,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_show.add_argument("--period", choices=["latest", "3m", "6m", "12m", "all"])
     db_show.add_argument("--ncm")
     db_show.add_argument("--text", help="override look selection query (quadro)")
-    db_show.add_argument("--out", default="/workspace")
+    db_show.add_argument("--out", default="", help="directory for PNG files (default: current working directory)")
     db_rm = db_sub.add_parser("rm", help="delete a local dashboard file")
     db_rm.add_argument("name")
 
